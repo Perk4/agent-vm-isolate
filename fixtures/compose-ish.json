@@ -1,0 +1,13 @@
+{
+  "services": {
+    "postgres": {
+      "image": "postgres:16"
+    },
+    "app": {
+      "image": "node:22"
+    }
+  },
+  "dns": {
+    "mode": "intercept"
+  }
+}
