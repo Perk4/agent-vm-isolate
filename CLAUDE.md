@@ -50,6 +50,9 @@ Skip the plan for small changes (one file or under ~50 lines): implement, test, 
 
 Never edit or delete a test to make it pass. A failing test is a finding: fix the code, or explain in the PR why the test was wrong.
 
+**Starting work in a new session:** `/start_ticket <issue>` for a ticket, `/handoff` before a session ends mid-ticket, `/plan_next` when the batch is done.
+Kickoff prompts, parallel-safe ticket groups and the recommended order are in [docs/sessions.md](docs/sessions.md).
+
 ## Learnings
 
 Add entries when something bites you. Keep each to one or two lines.
