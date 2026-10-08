@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose a new capability (e.g. a new device tool, harness behavior, isolation check).
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, and who needs it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should exist when this is done? Include tool names / inputs if this adds an agent tool.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - iphone-agent (harness / tools)
+        - iphone-agent (mock WDA)
+        - isolate (root package)
+        - CI / tooling
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will we know it works? Prefer checks that run against the mock device (`npm run mock`) so CI can verify them.
+      placeholder: |
+        - [ ] unit test for ...
+        - [ ] mock e2e: agent completes "..." in <= N steps
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and device impact
+      description: Does this let the agent take new actions on a real device? How does it go through the approve gate?
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, prior art, screenshots.
+    validations:
+      required: false

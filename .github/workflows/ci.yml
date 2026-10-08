@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Cancel superseded PR runs; never cancel runs on main.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  root:
+    name: root (isolate tests + typecheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: iphone-agent/package-lock.json
+      - name: Test
+        run: npm test
+      - name: Typecheck
+        # Root is zero-dependency: install the compiler + node types without
+        # touching package.json or creating a lockfile.
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund typescript@5.9.3 @types/node@22
+          npx --no-install tsc -p .
+
+  iphone-agent:
+    name: iphone-agent (typecheck, tests, mock e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: iphone-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: iphone-agent/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Smoke - agent tests its own work against the mock WDA
+        env:
+          PORT: "8100"
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP:-$(mktemp -d)}"
+          npm run mock > "$OUT/mock.log" 2>&1 &
+          MOCK_PID=$!
+          # npm does not always forward SIGTERM to the node child; stop both.
+          trap 'kill "$MOCK_PID" 2>/dev/null || true; pkill -f "src/mock-wda.ts" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -sf "localhost:${PORT}/status" > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf "localhost:${PORT}/status" | node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); if (j.value?.ready !== true) { console.error("status not ready:", j); process.exit(1); } console.log("status ok:", j.value.message);' \
+            || { echo "mock WDA did not become ready"; cat "$OUT/mock.log"; exit 1; }
+          for path in screenshot source; do
+            curl -sf "localhost:${PORT}/${path}" > "$OUT/${path}.json"
+            node -e '
+              const [file, name] = process.argv.slice(1);
+              const j = JSON.parse(require("fs").readFileSync(file, "utf8"));
+              if (j === null || typeof j !== "object" || !("value" in j) || j.value === null || j.value === undefined || j.value === "") {
+                console.error(`/${name}: missing value`); process.exit(1);
+              }
+              const len = typeof j.value === "string" ? j.value.length : JSON.stringify(j.value).length;
+              console.log(`/${name} ok: value is ${typeof j.value}, ${len} chars`);
+            ' "$OUT/${path}.json" "${path}"
+          done
+
+  anti-slop:
+    name: anti-slop
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for model-generated anti-patterns
+        run: bash scripts/anti-slop.sh
