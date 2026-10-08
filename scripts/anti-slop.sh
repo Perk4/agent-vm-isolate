@@ -79,6 +79,30 @@ test_grep '\b(test|it|describe|suite)\.only\(|\bonly:[[:space:]]*true' \
 src_grep -i 'lorem ipsum|your[-_]api[-_]key|sk-ant-x{3,}|<insert[ _-]' \
   | report "placeholder text"
 
+# Rules 9-11 are grep ports of dmmulroy/anti-slop Oxlint rules (MIT); see
+# .claude/skills/anti-slop/UPSTREAM.md for the pinned commit and what was left out.
+
+# Drop hits on comment lines ("file:line:  // ..." or " * ...").
+not_comment() { grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/?\*)'; }
+
+# 9. no-chained-type-assertions: `x as A as B` launders a type with no evidence.
+#    Chains whose last link is `as const` stay valid. Test files are exempt
+#    (building partial SDK fixtures there needs `as unknown as T`).
+src_grep '\bas[[:space:]]+[[:alnum:]_.$]+(<[^<>;]*>)?(\[\])?\)?[[:space:]]+as[[:space:]]+([^c[:space:]]|c[^o]|co[^n]|con[^s]|cons[^t]|const[[:alnum:]_$])' \
+  | not_comment \
+  | report "chained type assertion 'as A as B' (parse or narrow instead)"
+
+# 10. no-reflect-apply / no-reflect-get (source and tests).
+grep -rnE --include='*.ts' --exclude-dir=node_modules '\bReflect\.(apply|get)\(' "${DIRS[@]}" \
+  | not_comment \
+  | report "Reflect.apply / Reflect.get (call or read through a typed reference)"
+
+# 11. no-module-mocking: module mocks hide the real seam. Inject a dependency
+#     (as the tests do with the mock WDA) instead.
+grep -rnE --include='*.ts' --exclude-dir=node_modules '\b(vi|jest)\.(mock|doMock|unstable_mockModule)\(|\bmock\.module\(' "${DIRS[@]}" \
+  | not_comment \
+  | report "module mocking (vi.mock / jest.mock / node:test mock.module); inject the dependency instead"
+
 if [ "$fail" -ne 0 ]; then
   echo "anti-slop: FAILED"
   exit 1

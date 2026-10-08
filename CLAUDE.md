@@ -4,8 +4,8 @@
 
 - `src/`: root package `isolate` (container vs VM isolation contract). Zero dependencies. Tests in `src/isolate.test.ts`, fixtures in `fixtures/`.
 - `iphone-agent/`: separate npm package (own `package.json` + `package-lock.json`). WebDriverAgent harness that lets Claude drive an iPhone: `agent.ts` (loop, tools, approve gate), `wda.ts` (WDA client), `device.ts` (points-only view), `png.ts`, `mock-wda.ts` (fake iPhone), `cli.ts`, `mcp.ts` (same tools as an MCP server). Root `.mcp.json` registers `iphone-mock`, a mock-backed MCP server for testing your work.
-- `scripts/anti-slop.sh`: grep-based anti-pattern check (see `REVIEW.md`).
-- `.github/`: CI, PR/issue templates, CODEOWNERS. `REVIEW.md`: what blocks a PR.
+- `scripts/anti-slop.sh`: grep-based anti-pattern check (see `REVIEW.md`). `.claude/skills/anti-slop/`: the same rules plus judgment-only ones, as a skill (adapted from dmmulroy/anti-slop, see its `UPSTREAM.md`). Load it before writing `.ts`.
+- `.github/`: CI, Claude review/`@claude` workflow (`claude-review.yml`, setup in `docs/ci.md`), PR/issue templates, CODEOWNERS. `REVIEW.md`: what blocks a PR.
 - `thoughts/plans/`: implementation plans (`/create_plan`, `/validate_plan`).
 
 ## Commands
