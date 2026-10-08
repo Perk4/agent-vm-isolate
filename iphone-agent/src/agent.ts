@@ -9,7 +9,7 @@ type Tool = Anthropic.Beta.BetaTool;
 type MessageParam = Anthropic.Beta.BetaMessageParam;
 type Message = Anthropic.Beta.BetaMessage;
 type ToolResult = Anthropic.Beta.BetaToolResultBlockParam;
-type ToolContent = Exclude<ToolResult["content"], undefined>;
+export type ToolContent = Exclude<ToolResult["content"], undefined>;
 type Params = Anthropic.Beta.MessageCreateParamsNonStreaming;
 
 export type CreateMessage = (params: Params) => Promise<Message>;
@@ -95,9 +95,10 @@ export type RunOptions = {
 
 export type RunResult = { answer: string; steps: Step[]; stopReason: string };
 
-const ACTIONS = new Set(["tap", "swipe", "type_text", "press_button", "launch_app"]);
+/** Tools that change device state; these go through the approve gate. */
+export const ACTIONS = new Set(["tap", "swipe", "type_text", "press_button", "launch_app"]);
 
-async function execute(device: Device, name: string, input: Record<string, unknown>): Promise<ToolContent> {
+export async function execute(device: Device, name: string, input: Record<string, unknown>): Promise<ToolContent> {
   const n = (k: string) => {
     const v = input[k];
     if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`${k} must be a number`);

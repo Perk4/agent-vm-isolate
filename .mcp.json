@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "iphone-mock": {
+      "command": "node",
+      "args": ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "iphone-agent/src/mcp.ts", "--mock"]
+    }
+  }
+}

@@ -78,6 +78,22 @@ After the one-time signing, you can start WDA without Xcode. This also works fro
 
 **Simulator:** use `-destination 'platform=iOS Simulator,name=iPhone 17'` in step 5. No signing and no port forward are needed.
 
+## Use it as an MCP server
+
+The same seven tools are also served over MCP (`src/mcp.ts`). Any MCP client can then drive the phone with its own loop: Claude Code, Claude Desktop, or the Agent SDK. The client's per-tool permission prompts serve as the approval gate.
+
+```bash
+# real phone (WDA forwarded to :8100)
+claude mcp add iphone -- node --experimental-strip-types /abs/path/iphone-agent/src/mcp.ts
+# fake phone, no device needed
+claude mcp add iphone-mock -- node --experimental-strip-types /abs/path/iphone-agent/src/mcp.ts --mock
+```
+
+- `WDA_URL` points the server at a different WDA.
+- `IPHONE_MCP_READ_ONLY=1` exposes only `screenshot` and `describe_ui`.
+- `screenshot` and `describe_ui` are marked `readOnlyHint`, so clients can auto-allow them and still prompt for taps.
+- The repo-root `.mcp.json` registers `iphone-mock`. Any Claude Code session in this repo gets a fake iPhone to test its work against.
+
 ## CLI flags
 
 - `--wda <url>` (default `http://127.0.0.1:8100`, or `WDA_URL`)
@@ -94,6 +110,5 @@ The system prompt tells the model to stop before passwords, purchases, sending m
 ## Where to go next
 
 - **Run it from your phone.** Start the harness on the Mac inside Claude Code and drive it with Claude Code Remote Control (`claude --remote-control`) from the Claude iOS app. You give the iPhone a task from the iPhone itself.
-- **Expose it as an MCP server.** `TOOLS` and `execute()` map one-to-one to MCP tools, so Claude Code or Claude Desktop can drive the phone directly. That is the shape of mobile-mcp.
 - **Mirroring backend.** Implement `Device` with `screencapture` of the iPhone Mirroring window and CGEvent clicks, for setups with no WDA signing.
 - **Context hygiene.** Keep only the last N screenshots on long tasks (context editing `clear_tool_uses_20250919`).
