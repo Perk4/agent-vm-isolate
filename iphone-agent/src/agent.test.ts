@@ -159,3 +159,37 @@ test("approve gate blocks actions before they reach the device; maxSteps caps th
   assert.ok(result.steps.every((s) => !s.ok && /denied/.test(s.note)));
   assert.equal(looping.seen[0]!.fallbacks, undefined);
 });
+
+test("pause_turn responses count against maxSteps", async () => {
+  reset();
+  let calls = 0;
+  const pausing: CreateMessage = async (params) => {
+    calls++;
+    return { id: "m", type: "message", role: "assistant", model: params.model, content: [], stop_reason: "pause_turn" } as unknown as Anthropic.Beta.BetaMessage;
+  };
+  const result = await runAgent({ task: "x", device: new IPhone(new WdaClient(mock.url)), createMessage: pausing, maxSteps: 3 });
+  assert.equal(result.stopReason, "max_steps");
+  assert.equal(calls, 4); // turns 0..3, then the cap
+});
+
+test("an action whose follow-up screenshot fails is reported as done, not failed", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  const flaky = Object.assign(Object.create(phone) as IPhone, {
+    screenshot: () => Promise.reject(new Error("screenshot timed out")),
+  });
+  const model = scripted([[{ name: "launch_app", input: { bundle_id: "com.apple.Preferences" } }], "ok"]);
+  const result = await runAgent({ task: "x", device: flaky, createMessage: model.create });
+  assert.equal(mock.state.app, "com.apple.Preferences");
+  assert.equal(result.steps[0]!.ok, true);
+  const tr = (model.seen[1]!.messages.at(-1)!.content as Anthropic.Beta.BetaToolResultBlockParam[])[0]!;
+  assert.equal(tr.is_error, undefined);
+  assert.match(String(tr.content), /launch_app done, but the follow-up screenshot failed \(screenshot timed out\)/);
+});
+
+test("concurrent first calls share one WDA session", async () => {
+  reset();
+  const wda = new WdaClient(mock.url);
+  await Promise.all([wda.windowSize(), wda.source(), wda.windowSize()]);
+  assert.equal(mock.log.filter((l) => l === "POST /session").length, 1);
+});

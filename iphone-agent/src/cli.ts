@@ -6,6 +6,7 @@
 // Flags: --wda <url>  --model <id>  --effort <level>  --max-steps <n>
 //        --confirm (ask before each action)  --no-fallbacks  --mock
 
+import Anthropic from "@anthropic-ai/sdk";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { anthropicModel, runAgent } from "./agent.ts";
@@ -17,9 +18,9 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     wda: { type: "string", default: process.env.WDA_URL ?? "http://127.0.0.1:8100" },
-    model: { type: "string", default: "claude-opus-5-5" },
-    effort: { type: "string", default: "medium" },
-    "max-steps": { type: "string", default: "30" },
+    model: { type: "string" },
+    effort: { type: "string" },
+    "max-steps": { type: "string" },
     confirm: { type: "boolean", default: false },
     "no-fallbacks": { type: "boolean", default: false },
     mock: { type: "boolean", default: false },
@@ -29,6 +30,19 @@ const { values, positionals } = parseArgs({
 const task = positionals.join(" ").trim();
 if (!task) {
   console.error('usage: npm run agent -- [--mock] [--wda URL] "task for the iPhone"');
+  process.exit(2);
+}
+
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+type Effort = (typeof EFFORTS)[number];
+const isEffort = (v: string): v is Effort => (EFFORTS as readonly string[]).includes(v);
+if (values.effort !== undefined && !isEffort(values.effort)) {
+  console.error(`--effort must be one of ${EFFORTS.join(", ")}`);
+  process.exit(2);
+}
+const maxSteps = values["max-steps"] === undefined ? undefined : Number(values["max-steps"]);
+if (maxSteps !== undefined && (!Number.isInteger(maxSteps) || maxSteps < 1)) {
+  console.error("--max-steps must be a positive integer");
   process.exit(2);
 }
 
@@ -44,7 +58,6 @@ try {
 }
 
 const rl = values.confirm ? createInterface({ input: process.stdin, output: process.stderr }) : null;
-const effort = values.effort as "low" | "medium" | "high" | "xhigh" | "max";
 
 let result;
 try {
@@ -52,16 +65,20 @@ try {
     task,
     device: new IPhone(wda),
     createMessage: anthropicModel(),
-    model: values.model,
-    effort,
-    maxSteps: Number(values["max-steps"]),
+    // Unset flags fall through to runAgent's defaults, the single source of truth.
+    ...(values.model !== undefined ? { model: values.model } : {}),
+    ...(values.effort !== undefined && isEffort(values.effort) ? { effort: values.effort } : {}),
+    ...(maxSteps !== undefined ? { maxSteps } : {}),
     fallbacks: !values["no-fallbacks"],
     ...(rl ? { approve: async (tool, input) => /^y/i.test(await rl.question(`allow ${tool} ${JSON.stringify(input)}? [y/N] `)) } : {}),
     onStep: (s) => console.error(`${s.ok ? "✓" : "✗"} ${s.tool} ${JSON.stringify(s.input)}${s.ok ? "" : ` -> ${s.note}`}`),
   });
 } catch (err) {
-  console.error(`model call failed: ${err instanceof Error ? err.message : String(err)}`);
-  console.error("Set ANTHROPIC_API_KEY (or run `ant auth login`) and try again.");
+  console.error(`agent run failed: ${err instanceof Error ? err.message : String(err)}`);
+  const noEnvCreds = !process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN;
+  if (err instanceof Anthropic.AuthenticationError || noEnvCreds) {
+    console.error("Check credentials: set ANTHROPIC_API_KEY, or run `ant auth login`.");
+  }
   process.exitCode = 1;
 } finally {
   rl?.close();

@@ -137,7 +137,14 @@ export async function execute(device: Device, name: string, input: Record<string
   }
   // Give the UI a moment to settle so the returned screenshot shows the result.
   await new Promise((r) => setTimeout(r, Number(process.env.SETTLE_MS ?? 400)));
-  return await shot(device);
+  // The action already happened. If only the follow-up screenshot fails, say so
+  // rather than reporting a failure that would make the model repeat the action.
+  try {
+    return await shot(device);
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return `${name} done, but the follow-up screenshot failed (${why}). Call screenshot before acting again.`;
+  }
 }
 
 async function shot(device: Device): Promise<ToolContent> {
@@ -181,9 +188,10 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
 
     if (stop === "refusal") return { answer: text || "(model declined)", steps, stopReason: stop };
     if (stop === "max_tokens") return { answer: text || "(hit max_tokens)", steps, stopReason: stop };
-    if (stop === "pause_turn") continue;
-    if (uses.length === 0) return { answer: text, steps, stopReason: stop };
+    if (uses.length === 0 && stop !== "pause_turn") return { answer: text, steps, stopReason: stop };
     if (turn >= maxSteps) return { answer: text || `(stopped after ${maxSteps} turns)`, steps, stopReason: "max_steps" };
+
+    if (stop === "pause_turn") continue;
 
     const results: ToolResult[] = [];
     for (const use of uses) {

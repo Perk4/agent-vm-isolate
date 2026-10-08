@@ -59,10 +59,11 @@ src_grep 'catch[[:space:]]*(\([^)]*\))?[[:space:]]*\{[[:space:]]*\}' \
 #     explains why the error is swallowed is NOT empty and is allowed.
 multi=""
 while IFS= read -r f; do
-  multi+="$(awk -v f="$f" '
+  hit="$(awk -v f="$f" '
     prev && /^[[:space:]]*\}/ { print f ":" prevno ":" prevline }
     { prev = ($0 ~ /catch[[:space:]]*(\([^)]*\))?[[:space:]]*\{[[:space:]]*$/); prevno = NR; prevline = $0 }
   ' "$f")"
+  if [ -n "$hit" ]; then multi+="$hit"$'\n'; fi
 done < <(grep -rlE --include='*.ts' --exclude='*.test.ts' --exclude-dir=node_modules 'catch' "${DIRS[@]}")
 printf '%s' "$multi" | report "empty catch block (multi-line; handle the error or comment why it is ignored)"
 

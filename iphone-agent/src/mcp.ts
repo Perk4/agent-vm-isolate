@@ -1,6 +1,7 @@
 // The same seven phone tools as an MCP server, so any MCP client (Claude Code,
 // Claude Desktop, the Agent SDK) can drive the iPhone with its own loop.
-// The client's per-tool permission prompts act as the approval gate.
+// Over stdio, the client's per-tool permission prompts are the approval gate
+// (action tools carry destructiveHint). Embedders can pass `approve` as well.
 //
 //   claude mcp add iphone -- node --experimental-strip-types /path/to/iphone-agent/src/mcp.ts
 //   claude mcp add iphone-mock -- node --experimental-strip-types /path/to/iphone-agent/src/mcp.ts --mock
@@ -8,6 +9,8 @@
 // Env: WDA_URL (default http://127.0.0.1:8100), IPHONE_MCP_READ_ONLY=1 to expose
 // only screenshot and describe_ui.
 
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -16,7 +19,11 @@ import { IPhone, type Device } from "./device.ts";
 import { startMockWda } from "./mock-wda.ts";
 import { WdaClient } from "./wda.ts";
 
-export type PhoneServerOptions = { readOnly?: boolean };
+export type PhoneServerOptions = {
+  readOnly?: boolean;
+  /** Same gate as runAgent's: return false to refuse an action before it reaches the device. */
+  approve?: (tool: string, input: Record<string, unknown>) => boolean | Promise<boolean>;
+};
 
 export function createPhoneMcpServer(device: Device, opts: PhoneServerOptions = {}): Server {
   const exposed = TOOLS.filter((t) => !opts.readOnly || !ACTIONS.has(t.name));
@@ -26,7 +33,8 @@ export function createPhoneMcpServer(device: Device, opts: PhoneServerOptions = 
       name: t.name,
       ...(t.description ? { description: t.description } : {}),
       inputSchema: t.input_schema as Tool["inputSchema"],
-      annotations: { readOnlyHint: !action, destructiveHint: false, openWorldHint: false },
+      // Actions can send messages, change settings or open payment sheets, so clients should prompt for them.
+      annotations: { readOnlyHint: !action, destructiveHint: action, openWorldHint: false },
     };
   });
   const names = new Set(tools.map((t) => t.name));
@@ -37,6 +45,9 @@ export function createPhoneMcpServer(device: Device, opts: PhoneServerOptions = 
     const { name, arguments: args = {} } = req.params;
     if (!names.has(name)) return { isError: true, content: [{ type: "text", text: `unknown or disabled tool: ${name}` }] };
     try {
+      if (ACTIONS.has(name) && opts.approve && !(await opts.approve(name, args))) {
+        return { isError: true, content: [{ type: "text", text: "action denied by the operator" }] };
+      }
       return { content: toMcp(await execute(device, name, args)) };
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
@@ -57,7 +68,7 @@ function toMcp(content: ToolContent): CallToolResult["content"] {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const mock = process.argv.includes("--mock") ? await startMockWda() : null;
   const wda = new WdaClient(mock?.url ?? process.env.WDA_URL ?? "http://127.0.0.1:8100");
   const server = createPhoneMcpServer(new IPhone(wda), { readOnly: process.env.IPHONE_MCP_READ_ONLY === "1" });

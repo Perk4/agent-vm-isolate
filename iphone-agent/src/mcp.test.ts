@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { IPhone } from "./device.ts";
-import { createPhoneMcpServer } from "./mcp.ts";
+import { createPhoneMcpServer, type PhoneServerOptions } from "./mcp.ts";
 import { startMockWda, type MockWda } from "./mock-wda.ts";
 import { WdaClient } from "./wda.ts";
 
@@ -16,9 +16,9 @@ before(async () => {
 });
 after(() => mock.close());
 
-async function connect(readOnly = false) {
+async function connect(opts: PhoneServerOptions = {}) {
   Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [] });
-  const server = createPhoneMcpServer(new IPhone(new WdaClient(mock.url)), { readOnly });
+  const server = createPhoneMcpServer(new IPhone(new WdaClient(mock.url)), opts);
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
   await Promise.all([server.connect(a), client.connect(b)]);
@@ -33,6 +33,7 @@ test("lists all seven tools with read-only annotations", async () => {
   assert.deepEqual(tools.map((t) => t.name), ["screenshot", "describe_ui", "tap", "swipe", "type_text", "press_button", "launch_app"]);
   assert.equal(tools.find((t) => t.name === "screenshot")!.annotations?.readOnlyHint, true);
   assert.equal(tools.find((t) => t.name === "tap")!.annotations?.readOnlyHint, false);
+  assert.equal(tools.find((t) => t.name === "tap")!.annotations?.destructiveHint, true);
   assert.deepEqual(tools.find((t) => t.name === "tap")!.inputSchema.required, ["x", "y"]);
   await client.close();
 });
@@ -61,7 +62,7 @@ test("device errors come back as isError results, not protocol errors", async ()
 });
 
 test("read-only mode hides and refuses action tools", async () => {
-  const client = await connect(true);
+  const client = await connect({ readOnly: true });
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name), ["screenshot", "describe_ui"]);
   const res = await client.callTool({ name: "launch_app", arguments: { bundle_id: "com.apple.Preferences" } });
@@ -81,5 +82,18 @@ test("stdio entrypoint: `mcp.ts --mock` serves tools over stdin/stdout", async (
   await client.connect(transport);
   const shot = (await client.callTool({ name: "screenshot", arguments: {} })).content as Block[];
   assert.equal(shot[0]!.text, "screen 390x844 points");
+  await client.close();
+});
+
+test("approve gate refuses actions but lets reads through", async () => {
+  const seen: string[] = [];
+  const client = await connect({ approve: (tool) => (seen.push(tool), false) });
+  const res = await client.callTool({ name: "launch_app", arguments: { bundle_id: "com.apple.Preferences" } });
+  assert.equal(res.isError, true);
+  assert.match((res.content as Block[])[0]!.text!, /denied/);
+  assert.equal(mock.state.app, "home");
+  const shot = await client.callTool({ name: "screenshot", arguments: {} });
+  assert.notEqual(shot.isError, true);
+  assert.deepEqual(seen, ["launch_app"]);
   await client.close();
 });

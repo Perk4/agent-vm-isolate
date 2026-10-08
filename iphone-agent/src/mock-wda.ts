@@ -5,7 +5,9 @@
 //
 // Run standalone: npm run mock   (listens on :8100 like a real WDA)
 
+import { realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { pathToFileURL } from "node:url";
 import { encodePng } from "./png.ts";
 
 export type Rect = { x: number; y: number; width: number; height: number };
@@ -222,7 +224,7 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const port = Number(process.env.PORT ?? 8100);
   const mock = await startMockWda(port);
   console.log(`mock WDA listening on ${mock.url}`);

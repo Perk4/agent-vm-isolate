@@ -30,6 +30,7 @@ export class WdaError extends Error {
 export class WdaClient {
   readonly baseUrl: string;
   private sessionId: string | null = null;
+  private opening: Promise<string> | null = null;
 
   constructor(baseUrl = "http://127.0.0.1:8100") {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
@@ -55,27 +56,44 @@ export class WdaClient {
     return json.value;
   }
 
-  private async session(): Promise<string> {
-    if (this.sessionId) return this.sessionId;
+  /** Current session id, creating one if needed. Concurrent callers share a single POST /session. */
+  private session(): Promise<string> {
+    if (this.sessionId) return Promise.resolve(this.sessionId);
+    this.opening ??= this.openSession().finally(() => {
+      this.opening = null;
+    });
+    return this.opening;
+  }
+
+  private async openSession(): Promise<string> {
     const res = await fetch(this.baseUrl + "/session", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ capabilities: { alwaysMatch: {} } }),
     });
-    const json = (await res.json()) as WdaResponse<{ sessionId?: string }>;
-    const id = json.sessionId ?? json.value?.sessionId;
-    if (!res.ok || !id) throw new WdaError(`WDA could not create a session (${res.status})`, res.status);
+    const text = await res.text();
+    let json: WdaResponse<{ sessionId?: string }> | undefined;
+    try {
+      json = JSON.parse(text) as WdaResponse<{ sessionId?: string }>;
+    } catch {
+      // non-JSON body: reported below with the raw text
+    }
+    // Newer WDA puts the id in value.sessionId (W3C); older builds only at the top level.
+    const id = json?.value?.sessionId ?? json?.sessionId;
+    if (!res.ok || !id) throw new WdaError(`WDA could not create a session (${res.status}): ${text.slice(0, 200)}`, res.status);
     this.sessionId = id;
     return id;
   }
 
   /** Call a session-scoped route. If WDA restarted and dropped our session, open a new one and retry once. */
   private async sc<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+    const id = await this.session();
     try {
-      return await this.call<T>(method, `/session/${await this.session()}${path}`, body);
+      return await this.call<T>(method, `/session/${id}${path}`, body);
     } catch (err) {
       if (!(err instanceof WdaError) || err.code !== "invalid session id") throw err;
-      this.sessionId = null;
+      // Only drop the id we used; a concurrent caller may already have replaced it.
+      if (this.sessionId === id) this.sessionId = null;
       return await this.call<T>(method, `/session/${await this.session()}${path}`, body);
     }
   }

@@ -57,3 +57,6 @@ Add entries when something bites you. Keep each to one or two lines.
 - `--experimental-strip-types` rejects constructor parameter properties (`constructor(private x: T)`). Declare the field and assign it in the body.
 - WDA coordinates are points; screenshots are pixels (3x on most iPhones). Mixing them makes taps miss by a factor of the scale.
 - The Claude API downsizes large images, so coordinates read off a full-res screenshot are wrong twice over. Send point-resolution screenshots.
+- Entrypoint checks must compare `import.meta.url` to `pathToFileURL(realpathSync(process.argv[1])).href`. A hand-built `file://` string breaks on spaces and symlinks, and the server silently exits.
+- After a device action succeeds, never report the step as failed because the follow-up screenshot failed. The model will repeat the action (double taps, duplicate text).
+- Every loop exit path, `pause_turn` included, must count against `maxSteps`.
