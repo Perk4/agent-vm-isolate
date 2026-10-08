@@ -20,6 +20,7 @@ Applied by Claude Code Review and by human reviewers. Review the diff against th
 
 **Safety gate bypass for device actions**
 - Every tool that changes device state (tap, swipe, type, press button, launch app, and anything new) must be listed in `ACTIONS` in `iphone-agent/src/agent.ts`, so it goes through `approve` before reaching WDA. A new action tool that skips the gate is a blocker even if the prompt tells the model to be careful.
+- MCP (`iphone-agent/src/mcp.ts`) relies on the client's permission prompts. An action tool must never be advertised with `readOnlyHint: true`, and `IPHONE_MCP_READ_ONLY=1` must hide and refuse every tool in `ACTIONS`.
 - Don't weaken the step cap, `--confirm`, or the system-prompt stop rules (passwords, purchases, sending messages, security settings) without an explicit design note in the PR.
 
 **Secrets**
@@ -29,6 +30,7 @@ Applied by Claude Code Review and by human reviewers. Review the diff against th
 **Tests missing**
 - A new agent tool needs: a mock WDA route (if it calls a new endpoint), a unit test of `execute()` for success and error, and coverage in the mock end-to-end path.
 - A bug fix needs a regression test that fails without the fix.
+- A test that was weakened, skipped or deleted to get green, unless the PR explains why the test was wrong.
 - New root `isolate` behavior needs a test in `src/isolate.test.ts`.
 
 **Build hygiene**

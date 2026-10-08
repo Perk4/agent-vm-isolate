@@ -27,5 +27,7 @@ Plan:
 
 - [ ] CI green (root, iphone-agent, anti-slop)
 - [ ] `bash scripts/anti-slop.sh` clean locally
+- [ ] No test was edited or deleted just to make it pass
+- [ ] Learnings: anything that bit you is in CLAUDE.md, or turned into an anti-slop rule
 - [ ] Docs updated (README / CLAUDE.md Learnings / REVIEW.md) if behavior or conventions changed
 - [ ] Follow-up issues filed for anything deferred (and referenced in any TODO as `TODO(#123)`)

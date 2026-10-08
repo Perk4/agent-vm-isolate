@@ -3,7 +3,7 @@
 ## Layout
 
 - `src/`: root package `isolate` (container vs VM isolation contract). Zero dependencies. Tests in `src/isolate.test.ts`, fixtures in `fixtures/`.
-- `iphone-agent/`: separate npm package (own `package.json` + `package-lock.json`). WebDriverAgent harness that lets Claude drive an iPhone: `agent.ts` (loop, tools, approve gate), `wda.ts` (WDA client), `device.ts` (points-only view), `png.ts`, `mock-wda.ts` (fake iPhone), `cli.ts`.
+- `iphone-agent/`: separate npm package (own `package.json` + `package-lock.json`). WebDriverAgent harness that lets Claude drive an iPhone: `agent.ts` (loop, tools, approve gate), `wda.ts` (WDA client), `device.ts` (points-only view), `png.ts`, `mock-wda.ts` (fake iPhone), `cli.ts`, `mcp.ts` (same tools as an MCP server). Root `.mcp.json` registers `iphone-mock`, a mock-backed MCP server for testing your work.
 - `scripts/anti-slop.sh`: grep-based anti-pattern check (see `REVIEW.md`).
 - `.github/`: CI, PR/issue templates, CODEOWNERS. `REVIEW.md`: what blocks a PR.
 - `thoughts/plans/`: implementation plans (`/create_plan`, `/validate_plan`).
@@ -22,6 +22,7 @@ npm run typecheck                          # tsc -p .
 npm test                                   # node --test src/*.test.ts
 npm run mock                               # fake WDA on :8100 (PORT env to change)
 npm run agent -- --mock "task"             # run the agent against the built-in mock
+npm run mcp                                # MCP server on stdio (add --mock for the fake phone)
 npm run agent -- --wda http://127.0.0.1:8100 --confirm "task"   # real device; needs ANTHROPIC_API_KEY
 ```
 
@@ -38,11 +39,16 @@ CI (`.github/workflows/ci.yml`) runs all of the above plus a mock smoke test (`/
 
 ## Workflow
 
+Skip the plan for small changes (one file or under ~50 lines): implement, test, open the PR. Plans are at most 3 phases, each a vertical slice that runs end to end. Don't over-plan.
+
 1. Research: read the relevant code and `iphone-agent/RESEARCH.md`; don't guess APIs.
 2. Plan: `/create_plan` writes `thoughts/plans/YYYY-MM-DD-slug.md` with phases and automated + manual success criteria.
 3. Implement one phase at a time; run the phase's automated checks before moving on.
 4. Validate: `/validate_plan` checks the implementation against the plan and runs every check.
-5. Keep PRs small (one plan phase or one fix). Fill in `.github/pull_request_template.md`, link the plan.
+5. Align visually on anything non-trivial: `/show_me` gives the file-tree diff, call path and type signatures. Paste it into the PR.
+6. Keep PRs small (one plan phase or one fix). Fill in `.github/pull_request_template.md`, link the plan.
+
+Never edit or delete a test to make it pass. A failing test is a finding: fix the code, or explain in the PR why the test was wrong.
 
 ## Learnings
 
