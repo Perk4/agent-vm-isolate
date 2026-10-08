@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
 import { runAgent, TOOLS, type CreateMessage } from "./agent.ts";
@@ -192,4 +193,27 @@ test("concurrent first calls share one WDA session", async () => {
   const wda = new WdaClient(mock.url);
   await Promise.all([wda.windowSize(), wda.source(), wda.windowSize()]);
   assert.equal(mock.log.filter((l) => l === "POST /session").length, 1);
+});
+
+test("WDA errors delivered with HTTP 200 still throw (W3C envelope and legacy status)", async () => {
+  const bodies: Record<string, unknown> = {
+    "/w3c": { value: { error: "no such element", message: "Unable to find element" } },
+    "/legacy": { status: 7, value: "An element could not be located" },
+    "/ok": { status: 0, value: { ready: true } },
+  };
+  const srv = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(bodies[req.url ?? ""] ?? {}));
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  const port = (srv.address() as { port: number }).port;
+  // call() is private; reach it the way every public method does.
+  const call = (path: string) => (new WdaClient(`http://127.0.0.1:${port}`) as unknown as { call: (m: string, p: string) => Promise<unknown> }).call("GET", path);
+  try {
+    await assert.rejects(call("/w3c"), (e: unknown) => e instanceof WdaError && e.code === "no such element" && /Unable to find element/.test(e.message));
+    await assert.rejects(call("/legacy"), (e: unknown) => e instanceof WdaError && /could not be located/.test(e.message));
+    assert.deepEqual(await call("/ok"), { ready: true });
+  } finally {
+    srv.close();
+  }
 });

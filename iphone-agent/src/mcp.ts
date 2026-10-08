@@ -34,7 +34,8 @@ export function createPhoneMcpServer(device: Device, opts: PhoneServerOptions = 
       ...(t.description ? { description: t.description } : {}),
       inputSchema: t.input_schema as Tool["inputSchema"],
       // Actions can send messages, change settings or open payment sheets, so clients should prompt for them.
-      annotations: { readOnlyHint: !action, destructiveHint: action, openWorldHint: false },
+      // A tap can reach anything on the phone, websites included, so actions are open-world.
+      annotations: { readOnlyHint: !action, destructiveHint: action, openWorldHint: action },
     };
   });
   const names = new Set(tools.map((t) => t.name));

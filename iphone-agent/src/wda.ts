@@ -13,7 +13,8 @@ export type Size = { width: number; height: number };
 
 export type HardwareButton = "home" | "volumeUp" | "volumeDown";
 
-type WdaResponse<T> = { value: T; sessionId?: string | null };
+// `status` is the legacy JSONWP field: older WDA builds return HTTP 200 with a non-zero status on error.
+type WdaResponse<T> = { value: T; sessionId?: string | null; status?: number };
 
 export class WdaError extends Error {
   readonly status: number;
@@ -47,8 +48,13 @@ export class WdaClient {
     } catch {
       // fall through: non-JSON body
     }
-    if (!res.ok || json === undefined) {
-      const err = (json?.value ?? null) as { error?: unknown; message?: unknown } | null;
+    // An error can arrive as a non-2xx status, as a W3C `{ value: { error } }` body with HTTP 200,
+    // or as a legacy non-zero `status`. All three must fail, or a tap that never happened looks fine.
+    const value = json?.value as { error?: unknown; message?: unknown } | null | undefined;
+    const envelopeError = typeof value === "object" && value !== null && typeof value.error === "string";
+    const legacyError = typeof json?.status === "number" && json.status !== 0;
+    if (!res.ok || json === undefined || envelopeError || legacyError) {
+      const err = (typeof value === "object" ? value : null) ?? (typeof value === "string" ? { message: value } : null);
       const detail = typeof err?.message === "string" ? err.message : text.slice(0, 200);
       const code = typeof err?.error === "string" ? err.error : null;
       throw new WdaError(`WDA ${method} ${path} -> ${res.status}: ${detail}`, res.status, code);

@@ -34,6 +34,7 @@ test("lists all seven tools with read-only annotations", async () => {
   assert.equal(tools.find((t) => t.name === "screenshot")!.annotations?.readOnlyHint, true);
   assert.equal(tools.find((t) => t.name === "tap")!.annotations?.readOnlyHint, false);
   assert.equal(tools.find((t) => t.name === "tap")!.annotations?.destructiveHint, true);
+  assert.equal(tools.find((t) => t.name === "tap")!.annotations?.openWorldHint, true);
   assert.deepEqual(tools.find((t) => t.name === "tap")!.inputSchema.required, ["x", "y"]);
   await client.close();
 });

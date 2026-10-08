@@ -60,3 +60,4 @@ Add entries when something bites you. Keep each to one or two lines.
 - Entrypoint checks must compare `import.meta.url` to `pathToFileURL(realpathSync(process.argv[1])).href`. A hand-built `file://` string breaks on spaces and symlinks, and the server silently exits.
 - After a device action succeeds, never report the step as failed because the follow-up screenshot failed. The model will repeat the action (double taps, duplicate text).
 - Every loop exit path, `pause_turn` included, must count against `maxSteps`.
+- WDA can report an error with HTTP 200, as a `{ value: { error } }` body or a legacy non-zero `status`. Check the body, not just `res.ok`.

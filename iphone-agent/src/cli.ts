@@ -59,6 +59,10 @@ try {
 
 const rl = values.confirm ? createInterface({ input: process.stdin, output: process.stderr }) : null;
 
+// Typed text can be a password or a private message: log its length, never its content.
+const redact = (tool: string, input: Record<string, unknown>) =>
+  tool === "type_text" && typeof input.text === "string" ? { ...input, text: `<${input.text.length} chars>` } : input;
+
 let result;
 try {
   result = await runAgent({
@@ -71,7 +75,7 @@ try {
     ...(maxSteps !== undefined ? { maxSteps } : {}),
     fallbacks: !values["no-fallbacks"],
     ...(rl ? { approve: async (tool, input) => /^y/i.test(await rl.question(`allow ${tool} ${JSON.stringify(input)}? [y/N] `)) } : {}),
-    onStep: (s) => console.error(`${s.ok ? "✓" : "✗"} ${s.tool} ${JSON.stringify(s.input)}${s.ok ? "" : ` -> ${s.note}`}`),
+    onStep: (s) => console.error(`${s.ok ? "✓" : "✗"} ${s.tool} ${JSON.stringify(redact(s.tool, s.input))}${s.ok ? "" : ` -> ${s.note}`}`),
   });
 } catch (err) {
   console.error(`agent run failed: ${err instanceof Error ? err.message : String(err)}`);
