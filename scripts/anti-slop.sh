@@ -86,9 +86,13 @@ src_grep -i 'lorem ipsum|your[-_]api[-_]key|sk-ant-x{3,}|<insert[ _-]' \
 not_comment() { grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/?\*)'; }
 
 # 9. no-chained-type-assertions: `x as A as B` launders a type with no evidence.
-#    Chains whose last link is `as const` stay valid. Test files are exempt
-#    (building partial SDK fixtures there needs `as unknown as T`).
-src_grep '\bas[[:space:]]+[[:alnum:]_.$]+(<[^<>;]*>)?(\[\])?\)?[[:space:]]+as[[:space:]]+([^c[:space:]]|c[^o]|co[^n]|con[^s]|cons[^t]|const[[:alnum:]_$])' \
+#    The first type may be anything up to `=`, `,` or a paren (object, readonly,
+#    union, array, generic types), so `as { id: string } as T` is caught while
+#    `import { a as b, c as d }` and `(p as A) : (q as B)` are not. Chains whose
+#    last link is `as const` stay valid. Test files are exempt (building partial
+#    SDK fixtures there needs `as unknown as T`). Grep can't see casts split
+#    across lines or function types like `as (() => void) as T`; review covers those.
+src_grep '\bas[[:space:]]+([^=,()<>]|<[^<>=]*>)+[[:space:]]as[[:space:]]+([^c[:space:]]|c[^o]|co[^n]|con[^s]|cons[^t]|const[[:alnum:]_$])' \
   | not_comment \
   | report "chained type assertion 'as A as B' (parse or narrow instead)"
 
