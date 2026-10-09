@@ -88,6 +88,12 @@ export type RunOptions = {
   maxSteps?: number;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   fallbacks?: boolean;
+  /**
+   * How many of the most recent tool results (screenshots included) the model keeps once
+   * server-side context editing clears older ones. A positive integer; default 5. At least 1,
+   * so the model always sees the result of its latest action.
+   */
+  keepToolUses?: number;
   /** Return false to deny an action before it reaches the device. */
   approve?: (tool: string, input: Record<string, unknown>) => boolean | Promise<boolean>;
   onStep?: (step: Step) => void;
@@ -97,6 +103,21 @@ export type RunResult = { answer: string; steps: Step[]; stopReason: string };
 
 /** Tools that change device state; these go through the approve gate. */
 export const ACTIONS = new Set(["tap", "swipe", "type_text", "press_button", "launch_app"]);
+
+// Server-side context editing (beta context-management-2025-06-27). The API clears old
+// tool results before the model sees them, so the history we send stays append-only, which
+// preserved thinking requires: rewriting earlier turns client-side would invalidate it.
+// Wait for a real backlog (trigger) and clear in batches of at least 5k tokens instead of
+// one screenshot per turn. The trigger grows with `keep` (about 1k tokens of headroom per kept
+// result, a ~440-token screenshot plus text) so a large keep count can't sit permanently
+// below the point where anything is clearable.
+const CONTEXT_EDITING_BETA = "context-management-2025-06-27";
+export const clearOldToolResults = (keep: number): Anthropic.Beta.BetaClearToolUses20250919Edit => ({
+  type: "clear_tool_uses_20250919",
+  trigger: { type: "input_tokens", value: Math.max(20_000, 10_000 + keep * 1_000) },
+  keep: { type: "tool_uses", value: keep },
+  clear_at_least: { type: "input_tokens", value: 5_000 },
+});
 
 export async function execute(device: Device, name: string, input: Record<string, unknown>): Promise<ToolContent> {
   const n = (k: string) => {
@@ -160,6 +181,10 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const maxSteps = opts.maxSteps ?? 30;
   const steps: Step[] = [];
   const messages: MessageParam[] = [{ role: "user", content: opts.task }];
+  const keep = opts.keepToolUses ?? 5;
+  // Fail before the first API call: a bad value would otherwise 400 on every request.
+  if (!Number.isInteger(keep) || keep < 1) throw new RangeError(`keepToolUses must be a positive integer, got ${keep}`);
+  const fallbacks = opts.fallbacks ?? true;
 
   for (let turn = 0; ; turn++) {
     const params: Params = {
@@ -169,11 +194,10 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       tools: TOOLS,
       messages,
       output_config: { effort: opts.effort ?? "medium" },
+      context_management: { edits: [clearOldToolResults(keep)] },
+      betas: [CONTEXT_EDITING_BETA, ...(fallbacks ? ["server-side-fallback-2026-07-01"] : [])],
     };
-    if (opts.fallbacks ?? true) {
-      params.betas = ["server-side-fallback-2026-07-01"];
-      params.fallbacks = "default";
-    }
+    if (fallbacks) params.fallbacks = "default";
     const message = await createMessage(params);
     // Append the full content (thinking blocks included) so history stays append-only.
     messages.push({ role: "assistant", content: message.content });
