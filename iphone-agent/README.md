@@ -94,6 +94,42 @@ claude mcp add iphone-mock -- node --experimental-strip-types /abs/path/iphone-a
 - `screenshot` and `describe_ui` are marked `readOnlyHint`, so clients can auto-allow them and still prompt for taps.
 - The repo-root `.mcp.json` registers `iphone-mock`. Any Claude Code session in this repo gets a fake iPhone to test its work against.
 
+### Over HTTP (remote clients)
+
+stdio only works when the client runs on the Mac the phone is plugged into. `--http [port]` (or `--http=<port>`) serves the same tools over MCP Streamable HTTP at `/mcp` (default port 8765), so a client on another machine can use them, such as a cloud Claude Code session or the Claude app through a connector. stdio is still the default.
+
+```bash
+npm run mcp -- --http                 # http://127.0.0.1:8765/mcp, loopback only
+npm run mcp -- --mock --http 9000     # fake phone on port 9000
+claude mcp add --transport http iphone http://127.0.0.1:8765/mcp
+```
+
+This server controls a physical phone, so the defaults fail closed:
+
+- It binds `127.0.0.1` (`--host ::1` or `[::1]` for IPv6 loopback). The server counts as **exposed** if it binds anything else with `--host <addr>`, **or** if any `--allowed-host` is not loopback. A non-loopback `--allowed-host` means a proxy such as `tailscale serve` is forwarding remote traffic to the loopback port.
+- An exposed server needs a bearer token in `IPHONE_MCP_TOKEN` (at least 32 characters, e.g. `openssl rand -hex 32`). Without the token, it refuses to start.
+- When `IPHONE_MCP_TOKEN` is set (exposed or not), every request needs `Authorization: Bearer <token>`. Anything else gets 401. The comparison is constant-time.
+- An exposed server is **read-only** (`screenshot`, `describe_ui`) unless you also pass `--allow-actions`. `IPHONE_MCP_READ_ONLY=1` always wins.
+- Against DNS rebinding, the `Host` header (and `Origin`, when a browser sends one) must name a loopback address (`localhost`, `127.0.0.0/8`, `[::1]`), the `--host` address, or a name given with `--allowed-host <name>` (repeatable). Otherwise the server answers 403. A wildcard bind such as `0.0.0.0` needs `--allowed-host` for every name clients will use. `--allowed-host` takes a bare hostname or IP: a scheme, port, path or whitespace stops the server from starting. Case and a trailing dot don't matter.
+- `--host`, `--allow-actions` and `--allowed-host` only work together with `--http`. Without it, the server exits with an error rather than quietly serving stdio.
+- Tool calls run one at a time per phone, across all connected clients, so two clients' taps never interleave.
+- The server is stateless: only `POST /mcp` is served, with no sessions and no server-initiated stream. Internal errors reach the client as a generic `internal error`; the details go to stderr.
+
+**Reach it through a tunnel, not an open port.** [Tailscale](https://tailscale.com) puts the Mac and the client on a private, encrypted network, so nothing is exposed to the internet or the LAN:
+
+```bash
+# on the Mac with the phone (100.x.y.z is `tailscale ip -4`)
+export IPHONE_MCP_TOKEN=$(openssl rand -hex 32)
+npm run mcp -- --http --host 100.x.y.z --allowed-host mac.your-tailnet.ts.net            # read-only
+npm run mcp -- --http --host 100.x.y.z --allowed-host mac.your-tailnet.ts.net --allow-actions
+
+# on the client machine, in the same tailnet
+claude mcp add --transport http iphone http://mac.your-tailnet.ts.net:8765/mcp \
+  --header "Authorization: Bearer $IPHONE_MCP_TOKEN"
+```
+
+Alternatively, keep the default loopback bind and let `tailscale serve 8765` proxy it with HTTPS inside the tailnet. Pass `--allowed-host mac.your-tailnet.ts.net` so the proxied Host header is accepted. That name is not loopback, so the server counts as exposed: it needs `IPHONE_MCP_TOKEN` and is read-only unless you add `--allow-actions`, exactly like a non-loopback bind. Use Tailscale ACLs to limit which devices can reach the Mac. Don't use `tailscale funnel` or router port forwarding: they publish the phone to the internet.
+
 ## CLI flags
 
 - `--wda <url>` (default `http://127.0.0.1:8100`, or `WDA_URL`)
