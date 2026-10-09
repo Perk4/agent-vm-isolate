@@ -69,10 +69,19 @@ run() {
 dot="${NODE_OPTIONS:-} --test-reporter=dot"
 run "root npm test" env NODE_OPTIONS="$dot" npm test --silent
 run "anti-slop" bash scripts/anti-slop.sh
+deps_ok=1
 if [ ! -d iphone-agent/node_modules ]; then
-  run "iphone-agent npm ci (run: cd iphone-agent && npm ci)" npm ci --prefix iphone-agent --silent --no-audit --no-fund
+  # A failed install can leave a partial node_modules: remove it so the next
+  # run retries (npm ci deletes it first anyway), and skip the checks that
+  # need it rather than burying the npm error under missing-module noise.
+  if ! out="$(npm ci --prefix iphone-agent --loglevel=error --no-audit --no-fund 2>&1)"; then
+    rm -rf iphone-agent/node_modules
+    printf 'iphone-agent npm ci failed; run `cd iphone-agent && npm ci` and fix it (skipped root typecheck and iphone-agent checks):\n%s\n\n' "$(tail -n 20 <<<"$out")" >&2
+    failed=1
+    deps_ok=0
+  fi
 fi
-if [ -d iphone-agent/node_modules ]; then
+if [ "$deps_ok" -eq 1 ]; then
   # Root has no deps; borrow iphone-agent's pinned tsc and @types/node.
   run "root typecheck" iphone-agent/node_modules/.bin/tsc -p . --typeRoots iphone-agent/node_modules/@types
   run "iphone-agent typecheck" npm --prefix iphone-agent run --silent typecheck
