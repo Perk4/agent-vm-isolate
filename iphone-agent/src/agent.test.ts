@@ -404,10 +404,11 @@ test("the approve gate sees what a ref resolves to, not just its name", async ()
 });
 
 /** A WDA stand-in serving a fixed tree, for screens the mock can't draw. */
-function fakeWda(state: { tree: unknown; size: { width: number; height: number } }) {
+function fakeWda(state: { tree: unknown; size: { width: number; height: number }; bundleId?: string }) {
   const taps: [number, number][] = [];
   const wda = {
     source: async () => state.tree,
+    activeBundleId: async () => state.bundleId ?? "com.example.app",
     windowSize: async () => state.size,
     screenshot: async () =>
       encodePng({ width: state.size.width, height: state.size.height, rgb: Buffer.alloc(state.size.width * state.size.height * 3) }).toString("base64"),
@@ -494,12 +495,23 @@ test("an identical-looking element in a new listing is not the approved one", as
 });
 
 test("a different foreground app with matching controls makes refs stale", async () => {
-  const children = [button("OK", 10, 10)];
-  const state = { tree: { type: "XCUIElementTypeApplication", label: "App A", children } as unknown, size: { width: 390, height: 844 } };
+  // Same root label and controls; only the foreground bundle id (from /wda/activeAppInfo) differs.
+  const tree = { type: "XCUIElementTypeApplication", label: "Shop", children: [button("OK", 10, 10)] };
+  const state = { tree, size: { width: 390, height: 844 }, bundleId: "com.example.a" };
   const { wda, taps } = fakeWda(state);
   const phone = new IPhone(wda);
   await phone.describeUi();
-  state.tree = { type: "XCUIElementTypeApplication", label: "App B", children };
+  state.bundleId = "com.example.b";
   await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
   assert.deepEqual(taps, []);
+});
+
+test("a control whose state changed out of band makes refs stale", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.launchApp("com.apple.Preferences");
+  assert.match(await phone.describeUi(), /e4 Switch "Wi-Fi".*value="1"/);
+  mock.state.wifi = false; // flipped elsewhere: tapping e4 now would turn Wi-Fi back on
+  await assert.rejects(execute(phone, "tap", { ref: "e4" }), /e4 is stale: the screen changed/);
+  assert.equal(mock.state.wifi, false);
 });

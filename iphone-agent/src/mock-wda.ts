@@ -181,6 +181,8 @@ export async function startMockWda(port = 0): Promise<MockWda> {
       case "POST /session":
         sessionId = `mock-session-${++sessions}`;
         return send(res, 200, { value: { sessionId, capabilities: {} }, sessionId });
+      case "GET /wda/activeAppInfo":
+        return ok({ bundleId: state.app === "home" ? "com.apple.springboard" : state.app, name: "", pid: 1 });
       case "GET /window/size":
         return ok({ width: SCREEN.width, height: SCREEN.height });
       case "GET /screenshot":

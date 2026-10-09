@@ -37,7 +37,7 @@ type UiNode = {
 };
 
 /** One listed element. Its ref is `e<n>`, its position in the listing. */
-type UiElement = { ref: string; kind: string; text: string; rect: Rect; line: string };
+type UiElement = { ref: string; kind: string; text: string; value: string | null; enabled: boolean; rect: Rect; line: string };
 
 type UiListing = { elements: UiElement[]; total: number };
 
@@ -63,7 +63,8 @@ function uiElements(root: unknown, max: number): UiListing {
         let line = `${ref} ${kind} "${text}" center=(${cx},${cy}) size=${Math.round(width)}x${Math.round(height)}`;
         if (n.value !== null && n.value !== undefined && n.value !== "") line += ` value=${JSON.stringify(n.value)}`;
         if (n.isEnabled === false || n.isEnabled === "0") line += " disabled";
-        elements.push({ ref, kind, text, rect: { x, y, width, height }, line });
+        const enabled = !(n.isEnabled === false || n.isEnabled === "0");
+        elements.push({ ref, kind, text, value: n.value ?? null, enabled, rect: { x, y, width, height }, line });
       }
     }
     n.children?.forEach(walk);
@@ -84,15 +85,18 @@ export function flattenUi(root: unknown, max = MAX_ELEMENTS): string {
 }
 
 /**
- * The screen's layout: the foreground app's root node, then every qualifying element's type, label
- * and frame, in order, plus the total. Values are left out so a flipped switch is the same screen.
- * Any added element (an alert, a sheet, a banner) or a different app changes it, even an app whose
- * controls happen to match, which comparing one element at its index would miss.
+ * What a ref was taken from: the foreground app (its bundle id from /wda/activeAppInfo, which the
+ * source tree doesn't carry, plus the root node), then every qualifying element's type, label,
+ * value, enabled state and frame, in order, plus the total. Any out-of-band change invalidates it:
+ * an added element (an alert, a sheet, a banner), a different app even with matching controls, or
+ * a control whose state changed (a switch flipped elsewhere, which a tap would flip back). Our own
+ * actions expire refs through the epoch anyway.
  */
-function layout(root: unknown, { elements, total }: UiListing): string {
-  const r = (root ?? {}) as UiNode & { rawIdentifier?: unknown; bundleId?: unknown };
-  const app = [r.type ?? null, r.label ?? null, r.name ?? null, r.rawIdentifier ?? null, r.bundleId ?? null];
-  return JSON.stringify([app, total, elements.map((e) => [e.kind, e.text, e.rect.x, e.rect.y, e.rect.width, e.rect.height])]);
+function layout(root: unknown, bundleId: string | null, { elements, total }: UiListing): string {
+  const r = (root ?? {}) as UiNode & { rawIdentifier?: unknown };
+  const app = [bundleId, r.type ?? null, r.label ?? null, r.name ?? null, r.rawIdentifier ?? null];
+  const els = elements.map((e) => [e.kind, e.text, e.value, e.enabled, e.rect.x, e.rect.y, e.rect.width, e.rect.height]);
+  return JSON.stringify([app, total, els]);
 }
 
 const center = (r: Rect) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
@@ -130,7 +134,7 @@ export class IPhone implements Device {
 
   async describeUi(): Promise<string> {
     const epoch = this.epoch;
-    const source = await this.wda.source("json");
+    const [source, bundleId] = await Promise.all([this.wda.source("json"), this.wda.activeBundleId()]);
     const ui = uiElements(source, MAX_ELEMENTS);
     // An action that ran while /source was in flight may have changed the screen under this listing.
     if (epoch === this.epoch) {
@@ -138,7 +142,7 @@ export class IPhone implements Device {
         epoch,
         listing: ++this.listings,
         byRef: new Map(ui.elements.map((e) => [e.ref, e])),
-        layout: layout(source, uiElements(source, Infinity)),
+        layout: layout(source, bundleId, uiElements(source, Infinity)),
       };
     }
     return formatUi(ui);
@@ -168,8 +172,8 @@ export class IPhone implements Device {
     // The screen can change without our tools (an alert, a notification, a slow transition), so the
     // whole layout must still match what describe_ui saw before tapping there.
     // Every qualifying element, not just the 150 listed, so a change past the cap still counts.
-    const source = await this.wda.source("json");
-    const now = layout(source, uiElements(source, Infinity));
+    const [source, bundleId] = await Promise.all([this.wda.source("json"), this.wda.activeBundleId()]);
+    const now = layout(source, bundleId, uiElements(source, Infinity));
     // Compare with the epoch checked on entry, not one read after the awaits above: an action that
     // ran during either await (a concurrent MCP call) must expire this ref.
     if (this.epoch !== cached.epoch || now !== cached.layout) {

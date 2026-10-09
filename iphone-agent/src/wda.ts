@@ -104,6 +104,12 @@ export class WdaClient {
     }
   }
 
+  /** Bundle id of the foreground app (GET /wda/activeAppInfo), or null if WDA doesn't report one. */
+  async activeBundleId(): Promise<string | null> {
+    const info = await this.call<{ bundleId?: unknown } | null>("GET", "/wda/activeAppInfo");
+    return typeof info?.bundleId === "string" ? info.bundleId : null;
+  }
+
   status(): Promise<Record<string, unknown>> {
     return this.call("GET", "/status");
   }
