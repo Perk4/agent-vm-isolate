@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import { runAgent, TOOLS, type CreateMessage } from "./agent.ts";
+import { execute, runAgent, TOOLS, type CreateMessage } from "./agent.ts";
 import { flattenUi, IPhone } from "./device.ts";
 import { startMockWda, type MockWda } from "./mock-wda.ts";
 import { decodePng, encodePng, resize } from "./png.ts";
@@ -216,4 +216,81 @@ test("WDA errors delivered with HTTP 200 still throw (W3C envelope and legacy st
   } finally {
     srv.close();
   }
+});
+
+test("describe_ui prefixes each element with a ref", async () => {
+  reset();
+  const ui = await new IPhone(new WdaClient(mock.url)).describeUi();
+  assert.match(ui, /^e1 Icon "Settings" center=\(62,112\)/m);
+  assert.match(ui, /^e2 Icon "Notes" center=\(152,112\)/m);
+});
+
+test("agent loop: tap by ref turns Wi-Fi off", async () => {
+  reset();
+  // Home: e1 Settings. Settings: e1 Back, e2 title, e3 Wi-Fi cell, e4 Wi-Fi switch.
+  const model = scripted([
+    [{ name: "describe_ui", input: {} }],
+    [{ name: "tap", input: { ref: "e1" } }],
+    [{ name: "describe_ui", input: {} }],
+    [{ name: "tap", input: { ref: "e4" } }],
+    "Wi-Fi is now off.",
+  ]);
+  const result = await runAgent({ task: "Turn off Wi-Fi", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create });
+  assert.ok(result.steps.every((s) => s.ok), JSON.stringify(result.steps));
+  assert.equal(mock.state.app, "com.apple.Preferences");
+  assert.equal(mock.state.wifi, false);
+});
+
+test("a ref from before launch_app is stale: is_error, and nothing is tapped", async () => {
+  reset();
+  const model = scripted([
+    [{ name: "describe_ui", input: {} }],
+    [{ name: "launch_app", input: { bundle_id: "com.apple.Preferences" } }],
+    [{ name: "tap", input: { ref: "e1" } }],
+    "stopped",
+  ]);
+  const result = await runAgent({ task: "x", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create });
+  const tap = result.steps[2]!;
+  assert.equal(tap.ok, false);
+  assert.match(tap.note, /e1 is stale: an action ran.*describe_ui/);
+  const tr = (model.seen[3]!.messages.at(-1)!.content as Anthropic.Beta.BetaToolResultBlockParam[])[0]!;
+  assert.equal(tr.is_error, true);
+  // e1 is Back on the Settings screen; tapping it would have gone home.
+  assert.equal(mock.state.app, "com.apple.Preferences");
+  assert.ok(!mock.log.includes("POST /wda/tap"));
+});
+
+test("tap by ref re-checks the screen and refuses when it changed out of band", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.describeUi();
+  mock.state.app = "com.apple.Preferences"; // the screen changed without going through our tools
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /e1 is stale: the screen changed.*describe_ui/);
+  assert.ok(!mock.log.includes("POST /wda/tap"));
+  assert.equal(mock.state.app, "com.apple.Preferences");
+});
+
+test("any action expires refs, even one that leaves the screen as it was", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.describeUi();
+  await execute(phone, "press_button", { button: "home" }); // already home: same screen, same elements
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /e1 is stale: an action ran/);
+  assert.equal(mock.state.app, "home");
+  await phone.describeUi();
+  await execute(phone, "tap", { ref: "e1" });
+  assert.equal(mock.state.app, "com.apple.Preferences");
+});
+
+test("tap input: unknown ref, ref before describe_ui, both forms, and neither form are errors", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /call describe_ui/);
+  await phone.describeUi();
+  await assert.rejects(execute(phone, "tap", { ref: "e99" }), /unknown ref e99.*describe_ui/);
+  await assert.rejects(execute(phone, "tap", { ref: "e1", x: 1, y: 2 }), /either ref or x and y/);
+  await assert.rejects(execute(phone, "tap", {}), /either ref or x and y/);
+  await assert.rejects(execute(phone, "tap", { x: 1 }), /y must be a number/);
+  assert.ok(!mock.log.includes("POST /wda/tap"));
+  assert.equal(mock.state.app, "home");
 });

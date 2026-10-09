@@ -11,50 +11,88 @@ export interface Device {
   screenshot(): Promise<Observation>;
   describeUi(): Promise<string>;
   tap(x: number, y: number): Promise<void>;
+  /** Tap an element by the ref the latest describeUi gave it; throws, without tapping, if the ref is stale. */
+  tapRef(ref: string): Promise<void>;
   swipe(fromX: number, fromY: number, toX: number, toY: number, duration?: number): Promise<void>;
   typeText(text: string): Promise<void>;
   pressButton(name: HardwareButton): Promise<void>;
   launchApp(bundleId: string): Promise<void>;
 }
 
+type Rect = { x: number; y: number; width: number; height: number };
+
 type UiNode = {
   type?: string;
   label?: string | null;
   name?: string | null;
   value?: string | null;
-  rect?: { x: number; y: number; width: number; height: number };
+  rect?: Rect;
   isEnabled?: boolean | string;
   children?: UiNode[];
 };
 
+/** One listed element. Its ref is `e<n>`, its position in the listing. */
+type UiElement = { ref: string; kind: string; text: string; rect: Rect; line: string };
+
+type UiListing = { elements: UiElement[]; total: number };
+
 // Containers that add noise without being tappable targets themselves.
 const SKIP = new Set(["Other", "Window", "Application", "ScrollView", "Table", "CollectionView", "Image"]);
 
-/** Flatten a WDA JSON source tree into one line per meaningful element. */
-export function flattenUi(root: unknown, max = 150): string {
-  const lines: string[] = [];
+const MAX_ELEMENTS = 150;
+
+/** Keep the meaningful elements of a WDA JSON source tree, in document order, at most `max`. */
+function uiElements(root: unknown, max: number): UiListing {
+  const elements: UiElement[] = [];
+  let total = 0;
   const walk = (n: UiNode) => {
     const kind = (n.type ?? "").replace("XCUIElementType", "");
     const text = n.label || n.name || "";
     if (n.rect && (text || n.value) && !SKIP.has(kind) && n.rect.width > 0 && n.rect.height > 0) {
-      const { x, y, width, height } = n.rect;
-      const cx = Math.round(x + width / 2);
-      const cy = Math.round(y + height / 2);
-      let line = `${kind} "${text}" center=(${cx},${cy}) size=${Math.round(width)}x${Math.round(height)}`;
-      if (n.value !== null && n.value !== undefined && n.value !== "") line += ` value=${JSON.stringify(n.value)}`;
-      if (n.isEnabled === false || n.isEnabled === "0") line += " disabled";
-      lines.push(line);
+      total++;
+      if (elements.length < max) {
+        const { x, y, width, height } = n.rect;
+        const ref = `e${elements.length + 1}`;
+        const cx = Math.round(x + width / 2);
+        const cy = Math.round(y + height / 2);
+        let line = `${ref} ${kind} "${text}" center=(${cx},${cy}) size=${Math.round(width)}x${Math.round(height)}`;
+        if (n.value !== null && n.value !== undefined && n.value !== "") line += ` value=${JSON.stringify(n.value)}`;
+        if (n.isEnabled === false || n.isEnabled === "0") line += " disabled";
+        elements.push({ ref, kind, text, rect: { x, y, width, height }, line });
+      }
     }
     n.children?.forEach(walk);
   };
   walk(root as UiNode);
-  if (lines.length > max) return [...lines.slice(0, max), `... ${lines.length - max} more elements`].join("\n");
+  return { elements, total };
+}
+
+function formatUi({ elements, total }: UiListing): string {
+  const lines = elements.map((e) => e.line);
+  if (total > elements.length) lines.push(`... ${total - elements.length} more elements`);
   return lines.join("\n") || "(no labeled elements; use the screenshot)";
 }
+
+/** Flatten a WDA JSON source tree into one line per meaningful element, each prefixed with its ref. */
+export function flattenUi(root: unknown, max = MAX_ELEMENTS): string {
+  return formatUi(uiElements(root, max));
+}
+
+/** Same type, label and frame. A changed value (a flipped switch) is still the same target. */
+function sameTarget(a: UiElement, b: UiElement): boolean {
+  const r = a.rect;
+  const s = b.rect;
+  return a.kind === b.kind && a.text === b.text && r.x === s.x && r.y === s.y && r.width === s.width && r.height === s.height;
+}
+
+const REFRESH = "Call describe_ui again for fresh refs; do not tap its old coordinates.";
 
 export class IPhone implements Device {
   private readonly wda: WdaClient;
   private size: { width: number; height: number } | null = null;
+  // Bumped before every device action: refs from an older epoch are stale whatever the screen shows now.
+  private epoch = 0;
+  private refs: { epoch: number; byRef: Map<string, UiElement> } | null = null;
 
   constructor(wda: WdaClient) {
     this.wda = wda;
@@ -77,26 +115,53 @@ export class IPhone implements Device {
   }
 
   async describeUi(): Promise<string> {
-    return flattenUi(await this.wda.source("json"));
+    const epoch = this.epoch;
+    const ui = uiElements(await this.wda.source("json"), MAX_ELEMENTS);
+    // An action that ran while /source was in flight may have changed the screen under this listing.
+    if (epoch === this.epoch) this.refs = { epoch, byRef: new Map(ui.elements.map((e) => [e.ref, e])) };
+    return formatUi(ui);
+  }
+
+  async tapRef(ref: string): Promise<void> {
+    const cached = this.refs;
+    if (!cached) throw new Error("no element refs yet: call describe_ui first, then tap by ref.");
+    if (cached.epoch !== this.epoch) throw new Error(`ref ${ref} is stale: an action ran since the last describe_ui. ${REFRESH}`);
+    const target = cached.byRef.get(ref);
+    if (!target) throw new Error(`unknown ref ${ref}: the last describe_ui listed e1..e${cached.byRef.size}. ${REFRESH}`);
+    // The screen can change without our tools (an alert, a notification, a slow transition), so check
+    // the element is still where describe_ui saw it before tapping there.
+    const epoch = this.epoch;
+    const now = uiElements(await this.wda.source("json"), MAX_ELEMENTS).elements.find((e) => e.ref === ref);
+    if (epoch !== this.epoch || !now || !sameTarget(target, now)) {
+      this.refs = null;
+      throw new Error(`ref ${ref} is stale: the screen changed since the last describe_ui. ${REFRESH}`);
+    }
+    const { x, y, width, height } = now.rect;
+    await this.tap(x + width / 2, y + height / 2);
   }
 
   tap(x: number, y: number) {
+    this.epoch++;
     return this.wda.tap(x, y);
   }
 
   swipe(fromX: number, fromY: number, toX: number, toY: number, duration?: number) {
+    this.epoch++;
     return this.wda.swipe(fromX, fromY, toX, toY, duration);
   }
 
   typeText(text: string) {
+    this.epoch++;
     return this.wda.typeText(text);
   }
 
   pressButton(name: HardwareButton) {
+    this.epoch++;
     return this.wda.pressButton(name);
   }
 
   launchApp(bundleId: string) {
+    this.epoch++;
     return this.wda.launchApp(bundleId);
   }
 }

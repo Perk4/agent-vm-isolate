@@ -28,15 +28,24 @@ export const TOOLS: Tool[] = [
   {
     name: "describe_ui",
     description:
-      "List on-screen accessibility elements, one per line: type, label, center=(x,y) in points, size, value. " +
-      "Prefer tapping an element's center over estimating coordinates from the screenshot.",
+      "List on-screen accessibility elements, one per line: ref (e1, e2, ...), type, label, center=(x,y) in points, size, value. " +
+      "Tap an element by its ref rather than estimating coordinates from the screenshot. " +
+      "Refs expire after any action; call describe_ui again before tapping by ref.",
     input_schema: obj({}, []),
     strict: true,
   },
   {
     name: "tap",
-    description: "Tap at (x, y) in points. Returns a fresh screenshot.",
-    input_schema: obj({ x: num("x in points"), y: num("y in points") }, ["x", "y"]),
+    description:
+      "Tap an element by its ref from the latest describe_ui, e.g. {\"ref\": \"e4\"}, or tap at {\"x\", \"y\"} in points. " +
+      "Pass either ref, or both x and y, never both forms. A stale ref returns an error and taps nothing. " +
+      "Returns a fresh screenshot.",
+    // Either/or input, but a root-level oneOf/anyOf is refused by the Messages API (and so by MCP
+    // clients that forward this schema), so all three fields are optional and execute() checks the shape.
+    input_schema: obj(
+      { ref: { type: "string", description: "element ref from describe_ui, e.g. e4" }, x: num("x in points"), y: num("y in points") },
+      [],
+    ),
     strict: true,
   },
   {
@@ -72,7 +81,7 @@ export const TOOLS: Tool[] = [
 
 export const SYSTEM = `You operate a real iPhone through tools. You cannot see the screen unless you call screenshot or an action returns one.
 
-Work in short observe -> act cycles: look, take one action, check the result. Use describe_ui to get exact element centers; all coordinates are iOS points. To type, tap the text field first, then type_text.
+Work in short observe -> act cycles: look, take one action, check the result. Use describe_ui to list elements, then tap them by ref; refs expire after every action, so call describe_ui again before the next tap by ref. All coordinates are iOS points. To type, tap the text field first, then type_text.
 
 Do not enter passwords, make purchases, send messages, or change security settings unless the task explicitly says to. If something unexpected appears (login wall, permission prompt, payment sheet), stop and report it.
 
@@ -114,9 +123,14 @@ export async function execute(device: Device, name: string, input: Record<string
       return await shot(device);
     case "describe_ui":
       return await device.describeUi();
-    case "tap":
-      await device.tap(n("x"), n("y"));
+    case "tap": {
+      const byRef = input.ref !== undefined;
+      const byPoint = input.x !== undefined || input.y !== undefined;
+      if (byRef === byPoint) throw new Error("tap takes either ref or x and y: exactly one of the two forms");
+      if (byRef) await device.tapRef(s("ref"));
+      else await device.tap(n("x"), n("y"));
       break;
+    }
     case "swipe":
       await device.swipe(n("from_x"), n("from_y"), n("to_x"), n("to_y"));
       break;
