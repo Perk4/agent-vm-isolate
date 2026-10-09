@@ -12,7 +12,8 @@ export interface Device {
   describeUi(): Promise<string>;
   tap(x: number, y: number): Promise<void>;
   /** Tap an element by the ref the latest describeUi gave it; throws, without tapping, if the ref is stale. */
-  tapRef(ref: string): Promise<void>;
+  /** `expect` is the describeRef() text an approver saw; if the ref now resolves differently, refuse. */
+  tapRef(ref: string, expect?: string): Promise<void>;
   /** What a ref points at per the latest describeUi (e.g. `Switch "Wi-Fi" at (345,145)`), or null if unknown or stale. */
   describeRef(ref: string): string | null;
   swipe(fromX: number, fromY: number, toX: number, toY: number, duration?: number): Promise<void>;
@@ -129,7 +130,7 @@ export class IPhone implements Device {
     return formatUi(ui);
   }
 
-  async tapRef(ref: string): Promise<void> {
+  async tapRef(ref: string, expect?: string): Promise<void> {
     const cached = this.refs;
     if (!cached) throw new Error("no element refs yet: call describe_ui first, then tap by ref.");
     if (cached.epoch !== this.epoch) throw new Error(`ref ${ref} is stale: an action ran since the last describe_ui. ${REFRESH}`);
@@ -137,6 +138,11 @@ export class IPhone implements Device {
     if (!target) {
       const listed = cached.byRef.size ? `listed e1..e${cached.byRef.size}` : "listed no elements";
       throw new Error(`unknown ref ${ref}: the last describe_ui ${listed}. ${REFRESH}`);
+    }
+    // A describe_ui that ran while approval was pending can rebind the ref to another element.
+    // Tap only what the approver saw.
+    if (expect !== undefined && this.describeRef(ref) !== expect) {
+      throw new Error(`ref ${ref} no longer points at the approved element (${expect}). ${REFRESH}`);
     }
     const c = center(target.rect);
     // Fresh, not the cached size: after a rotation the window is landscape and the cache is stale.

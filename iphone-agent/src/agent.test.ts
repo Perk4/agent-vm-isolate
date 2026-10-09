@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import { clearOldToolResults, execute, runAgent, TOOLS, type CreateMessage } from "./agent.ts";
+import { approvalInput, clearOldToolResults, execute, runAgent, TOOLS, type CreateMessage } from "./agent.ts";
 import { flattenUi, IPhone } from "./device.ts";
 import { startMockWda, type MockWda } from "./mock-wda.ts";
 import { decodePng, encodePng, resize } from "./png.ts";
@@ -459,4 +459,18 @@ test("an action that runs while tapRef awaits the window size expires the ref", 
   release();
   await assert.rejects(pending, /e1 is stale/);
   assert.deepEqual(taps, [[1, 1]]);
+});
+
+test("a describe_ui during a pending approval can't redirect the approved tap", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.describeUi(); // home: e1 = the Settings icon
+  const shown = approvalInput(phone, "tap", { ref: "e1" });
+  assert.equal(shown.target, 'Icon "Settings" at (62,112)');
+  // While the human is deciding, the screen changes out of band and another describe_ui
+  // rebinds e1 to Settings' Back button. The layout check alone would accept this tap.
+  mock.state.app = "com.apple.Preferences";
+  assert.match(await phone.describeUi(), /^e1 Button "Back"/);
+  await assert.rejects(execute(phone, "tap", shown), /e1 no longer points at the approved element \(Icon "Settings" at \(62,112\)\)/);
+  assert.equal(mock.state.app, "com.apple.Preferences", "Back was not tapped");
 });

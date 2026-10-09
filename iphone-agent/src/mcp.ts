@@ -46,10 +46,12 @@ export function createPhoneMcpServer(device: Device, opts: PhoneServerOptions = 
     const { name, arguments: args = {} } = req.params;
     if (!names.has(name)) return { isError: true, content: [{ type: "text", text: `unknown or disabled tool: ${name}` }] };
     try {
-      if (ACTIONS.has(name) && opts.approve && !(await opts.approve(name, approvalInput(device, name, args)))) {
+      // Resolve once: the approver and the tap must see the same target.
+      const shown = approvalInput(device, name, args);
+      if (ACTIONS.has(name) && opts.approve && !(await opts.approve(name, shown))) {
         return { isError: true, content: [{ type: "text", text: "action denied by the operator" }] };
       }
-      return { content: toMcp(await execute(device, name, args)) };
+      return { content: toMcp(await execute(device, name, shown)) };
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
     }

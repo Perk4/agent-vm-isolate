@@ -157,7 +157,8 @@ export async function execute(device: Device, name: string, input: Record<string
       const byRef = input.ref !== undefined;
       const byPoint = input.x !== undefined || input.y !== undefined;
       if (byRef === byPoint) throw new Error("tap takes either ref or x and y: exactly one of the two forms");
-      if (byRef) await device.tapRef(s("ref"));
+      // `target` is set by approvalInput (never by the model: the schema forbids extra fields).
+      if (byRef) await device.tapRef(s("ref"), typeof input.target === "string" ? input.target : undefined);
       else await device.tap(n("x"), n("y"));
       break;
     }
@@ -252,7 +253,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         if (ACTIONS.has(use.name) && opts.approve && !(await opts.approve(use.name, shown))) {
           throw new Error("action denied by the operator");
         }
-        content = await execute(device, use.name, input);
+        content = await execute(device, use.name, shown);
       } catch (err) {
         ok = false;
         note = err instanceof Error ? err.message : String(err);
