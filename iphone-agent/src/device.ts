@@ -101,18 +101,28 @@ export function flattenUi(root: unknown, max = MAX_ELEMENTS): string {
 }
 
 /**
- * What a ref was taken from: the foreground app (its bundle id from /wda/activeAppInfo, which the
- * source tree doesn't carry, plus the root node), then every qualifying element's type, label,
- * value, enabled state and frame, in order, plus the total. Any out-of-band change invalidates it:
- * an added element (an alert, a sheet, a banner), a different app even with matching controls, or
- * a control whose state changed (a switch flipped elsewhere, which a tap would flip back). Our own
- * actions expire refs through the epoch anyway.
+ * What a ref was taken from: the foreground app's bundle id (from /wda/activeAppInfo, which the
+ * source tree doesn't carry), then every visible node with a frame, the root included, in order:
+ * type, label, name, identifier, value, enabled state and frame. That covers nodes the listing
+ * leaves out (unlabeled buttons, containers, an overlay), so any out-of-band change invalidates it:
+ * an alert or sheet, a different app even with matching controls, or a control whose state changed
+ * (a switch flipped elsewhere, which a tap would flip back). Our own actions expire refs through
+ * the epoch anyway.
  */
-function layout(root: unknown, bundleId: string | null, { elements, total }: UiListing): string {
+function layout(root: unknown, bundleId: string | null): string {
+  const nodes: unknown[] = [];
+  const walk = (n: UiNode) => {
+    const visible = !(n.isVisible === false || n.isVisible === "0");
+    if (visible && n.rect && n.rect.width > 0 && n.rect.height > 0) {
+      const { x, y, width, height } = n.rect;
+      const enabled = !(n.isEnabled === false || n.isEnabled === "0");
+      nodes.push([n.type ?? null, n.label ?? null, n.name ?? null, n.rawIdentifier ?? null, n.value ?? null, enabled, x, y, width, height]);
+    }
+    n.children?.forEach(walk);
+  };
   const r = (root ?? {}) as UiNode;
-  const app = [bundleId, r.type ?? null, r.label ?? null, r.name ?? null, r.rawIdentifier ?? null];
-  const els = elements.map((e) => [e.kind, e.text, ...e.id, e.value, e.enabled, e.rect.x, e.rect.y, e.rect.width, e.rect.height]);
-  return JSON.stringify([app, total, els]);
+  walk(r);
+  return JSON.stringify([bundleId, r.type ?? null, r.label ?? null, r.name ?? null, r.rawIdentifier ?? null, nodes]);
 }
 
 const center = (r: Rect) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
@@ -160,10 +170,13 @@ export class IPhone implements Device {
         epoch,
         listing: ++this.listings,
         byRef: new Map(ui.elements.map((e) => [e.ref, e])),
-        layout: layout(source, bundleId, uiElements(source, Infinity)),
+        layout: layout(source, bundleId),
       };
+      return formatUi(ui);
     }
-    return formatUi(ui);
+    // Don't leave an older listing answering to refs this text shows: expire it.
+    if (this.refs) this.refs = { ...this.refs, epoch: -1 };
+    return `${formatUi(ui)}\n(refs unavailable: the screen changed while it was read. Call describe_ui again before tapping by ref.)`;
   }
 
   async tapRef(ref: string, listing?: number): Promise<void> {
@@ -189,10 +202,10 @@ export class IPhone implements Device {
     }
     // The screen can change without our tools (an alert, a notification, a slow transition), so the
     // whole layout must still match what describe_ui saw before tapping there.
-    // Every qualifying element, not just the 150 listed, so a change past the cap still counts.
+    // Every visible node, not just the 150 listed, so a change past the cap or to an unlisted node counts.
     const snap = await this.snapshot();
     // An inconsistent snapshot (the app switched mid-read) can't vouch for the ref: treat it as changed.
-    const now = snap.consistent ? layout(snap.source, snap.bundleId, uiElements(snap.source, Infinity)) : null;
+    const now = snap.consistent ? layout(snap.source, snap.bundleId) : null;
     // Compare with the epoch checked on entry, not one read after the awaits above: an action that
     // ran during either await (a concurrent MCP call) must expire this ref.
     if (this.epoch !== cached.epoch || now !== cached.layout) {
@@ -215,7 +228,7 @@ export class IPhone implements Device {
     return { source, bundleId: after, consistent: before === after };
   }
 
-    refListing(): number | null {
+  refListing(): number | null {
     const cached = this.refs;
     return cached && cached.epoch === this.epoch ? cached.listing : null;
   }

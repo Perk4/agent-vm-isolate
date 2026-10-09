@@ -560,3 +560,32 @@ test("an app switch while /source is read gives no refs, and fails a pending tap
   await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
   assert.deepEqual(taps, []);
 });
+
+test("an unlabeled overlay appearing over listed controls makes refs stale", async () => {
+  const app = (...children: unknown[]) => ({ type: "XCUIElementTypeApplication", children });
+  const state = { tree: app(button("OK", 10, 10)) as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  await phone.describeUi();
+  // No label, name or value, so the listing skips it, but it now covers the OK button.
+  state.tree = app(button("OK", 10, 10), { type: "XCUIElementTypeButton", rect: { x: 0, y: 0, width: 390, height: 844 } });
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("an inconsistent describe_ui expires the previous listing's refs", async () => {
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [button("OK", 10, 10)] } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  let switching = false;
+  let reads = 0;
+  const bundle = async () => (switching && reads++ % 2 === 1 ? "com.b" : "com.a");
+  const phone = new IPhone(Object.assign(Object.create(wda) as WdaClient, { activeBundleId: bundle }));
+  await phone.describeUi();
+  switching = true;
+  assert.match(await phone.describeUi(), /refs unavailable/);
+  // The screen settles back to the first layout; the e1 just shown must still not resolve to the older listing.
+  switching = false;
+  assert.equal(phone.describeRef("e1"), null);
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale/);
+  assert.deepEqual(taps, []);
+});
