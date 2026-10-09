@@ -440,3 +440,23 @@ test("after a rotation, a ref on the right of a landscape screen is on-screen", 
   await phone.tapRef("e1");
   assert.deepEqual(taps, [[720, 110]]);
 });
+
+test("an action that runs while tapRef awaits the window size expires the ref", async () => {
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [button("OK", 10, 10)] }, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  let release = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const slowWda = Object.assign(Object.create(wda) as WdaClient, {
+    windowSize: async () => {
+      await gate;
+      return state.size;
+    },
+  });
+  const phone = new IPhone(slowWda);
+  await phone.describeUi();
+  const pending = phone.tapRef("e1");
+  await phone.tap(1, 1); // a concurrent action that leaves the layout unchanged
+  release();
+  await assert.rejects(pending, /e1 is stale/);
+  assert.deepEqual(taps, [[1, 1]]);
+});

@@ -147,10 +147,11 @@ export class IPhone implements Device {
     }
     // The screen can change without our tools (an alert, a notification, a slow transition), so the
     // whole layout must still match what describe_ui saw before tapping there.
-    const epoch = this.epoch;
     // Every qualifying element, not just the 150 listed, so a change past the cap still counts.
     const now = layout(uiElements(await this.wda.source("json"), Infinity));
-    if (epoch !== this.epoch || now !== cached.layout) {
+    // Compare with the epoch checked on entry, not one read after the awaits above: an action that
+    // ran during either await (a concurrent MCP call) must expire this ref.
+    if (this.epoch !== cached.epoch || now !== cached.layout) {
       // Expire the listing but keep it, so a retry with another ref still reads "stale".
       if (this.refs === cached) this.refs = { ...cached, epoch: -1 };
       throw new Error(`ref ${ref} is stale: the screen changed since the last describe_ui. ${REFRESH}`);
