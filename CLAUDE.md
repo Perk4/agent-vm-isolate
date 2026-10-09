@@ -50,6 +50,8 @@ Skip the plan for small changes (one file or under ~50 lines): implement, test, 
 
 Never edit or delete a test to make it pass. A failing test is a finding: fix the code, or explain in the PR why the test was wrong.
 
+Back-pressure: the Stop hook (`.claude/settings.json` → `scripts/stop-check.sh`) runs tests, typecheck and anti-slop when `.ts` changed, and blocks the stop with only the failures. Fix them; don't disable it. Run `/learn` after a batch of merges to turn review findings into Learnings, anti-slop rules and REVIEW.md items.
+
 **Starting work in a new session:** `/start_ticket <issue>` for a ticket, `/handoff` before a session ends mid-ticket, `/plan_next` when the batch is done.
 Kickoff prompts, parallel-safe ticket groups and the recommended order are in [docs/sessions.md](docs/sessions.md).
 
@@ -64,3 +66,4 @@ Add entries when something bites you. Keep each to one or two lines.
 - After a device action succeeds, never report the step as failed because the follow-up screenshot failed. The model will repeat the action (double taps, duplicate text).
 - Every loop exit path, `pause_turn` included, must count against `maxSteps`.
 - WDA can report an error with HTTP 200, as a `{ value: { error } }` body or a legacy non-zero `status`. Check the body, not just `res.ok`.
+- Under `set -o pipefail`, `printf "$big" | grep -q x` can fail even when it matches: `grep -q` exits early and `printf` dies of SIGPIPE. Use `grep -q x <<<"$big"` (bit `scripts/stop-check.sh`).
