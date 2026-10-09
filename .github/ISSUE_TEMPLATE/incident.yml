@@ -1,0 +1,76 @@
+name: Incident / bug
+description: Something went wrong (wrong tap, crash, runaway loop, WDA error). Written so an agent can pick it up and fix it.
+title: "incident: "
+labels: ["incident"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Incidents feed the agent factory: a good report has a repro against the mock device
+        and a proposed fix, so an agent can turn it into a failing test, then a patch.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Observed vs expected behavior. Include the task prompt given to the agent.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - "SEV1: unsafe device action (bypassed approve gate, sent/purchased/changed settings)"
+        - "SEV2: agent broken (crash, cannot complete basic tasks)"
+        - "SEV3: degraded (wrong taps, extra steps, flaky)"
+        - "SEV4: cosmetic / logging"
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Where did it happen
+      multiple: true
+      options:
+        - mock WDA (npm run mock)
+        - iOS Simulator
+        - real device
+        - CI
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / transcript
+      description: Agent step log, tool calls, WDA error bodies. Redact secrets and personal data.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: repro-mock
+    attributes:
+      label: Repro against mock device
+      description: |
+        Exact steps to reproduce with `npm run mock` (or a unit test using the mock in-process).
+        If it does not reproduce on the mock, say what the mock is missing; that gap is itself a fix.
+      placeholder: |
+        cd iphone-agent
+        npm run agent -- --mock --max-steps 10 "..."
+        # or against the standalone mock: npm run mock & npm run agent -- --wda http://127.0.0.1:8100 "..."
+        # expected: ... / actual: ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-fix
+    attributes:
+      label: Proposed fix
+      description: Root-cause guess and the change you would make (file / function). "Unknown" is fine, but say what you ruled out.
+    validations:
+      required: true
+  - type: textarea
+    id: regression-test
+    attributes:
+      label: Regression test
+      description: The test that should fail before the fix and pass after.
+    validations:
+      required: false
