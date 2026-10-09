@@ -50,6 +50,8 @@ Skip the plan for small changes (one file or under ~50 lines): implement, test, 
 
 Never edit or delete a test to make it pass. A failing test is a finding: fix the code, or explain in the PR why the test was wrong.
 
+Back-pressure: the Stop hook (`.claude/settings.json` → `scripts/stop-check.sh`, run in the session's repo or worktree) runs root tests + typecheck, anti-slop, and iphone-agent typecheck + tests (running `npm ci` there first if `node_modules` is missing) whenever `.ts`, `fixtures/`, `scripts/`, the anti-slop skill, or a `package*.json`/`tsconfig.json` changed (uncommitted, untracked or unpushed). Silent when green; otherwise it blocks the stop with only the failures, at most 3 times per session (reset on a green run), then lets you stop: say what is still broken. Fix the failures; don't disable it. Run `/learn` after a batch of merges to turn review findings into Learnings, anti-slop rules and REVIEW.md items.
+
 **Starting work in a new session:** `/start_ticket <issue>` for a ticket, `/handoff` before a session ends mid-ticket, `/plan_next` when the batch is done.
 Kickoff prompts, parallel-safe ticket groups and the recommended order are in [docs/sessions.md](docs/sessions.md).
 
@@ -65,6 +67,7 @@ Add entries when something bites you. Keep each to one or two lines.
 - Every loop exit path, `pause_turn` included, must count against `maxSteps`.
 - WDA can report an error with HTTP 200, as a `{ value: { error } }` body or a legacy non-zero `status`. Check the body, not just `res.ok`.
 - A tool `input_schema` can't put `oneOf`/`anyOf`/`allOf` at the root (the Messages API refuses it, and MCP clients forward `inputSchema` there), and strict mode has no `oneOf` at all. For either/or input, make the fields optional and check the shape in `execute()` (see `tap`).
+- Under `set -o pipefail`, `printf "$big" | grep -q x` can fail even when it matches: `grep -q` exits early and `printf` dies of SIGPIPE. Use `grep -q x <<<"$big"` (bit `scripts/stop-check.sh`).
 - To shrink old screenshots/tool results, use server-side context editing (`context_management`, beta `context-management-2025-06-27`), never a client-side prune: edited history invalidates preserved thinking on `claude-opus-5-5`. Tests assert requests stay append-only.
 - A module with top-level `await` must not dynamically `import()` a module that imports it back: the cycle deadlocks silently. Use a static import.
 - MCP SDK 1.32 Streamable HTTP transports don't type-check as `Transport` under `exactOptionalPropertyTypes` (accessors return `T | undefined`). Use `@ts-expect-error` with that reason, not a cast chain.
