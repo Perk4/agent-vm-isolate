@@ -88,6 +88,11 @@ export type RunOptions = {
   maxSteps?: number;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   fallbacks?: boolean;
+  /**
+   * How many of the most recent tool results (screenshots included) the model keeps once
+   * server-side context editing clears older ones. Default 5.
+   */
+  keepToolUses?: number;
   /** Return false to deny an action before it reaches the device. */
   approve?: (tool: string, input: Record<string, unknown>) => boolean | Promise<boolean>;
   onStep?: (step: Step) => void;
@@ -97,6 +102,19 @@ export type RunResult = { answer: string; steps: Step[]; stopReason: string };
 
 /** Tools that change device state; these go through the approve gate. */
 export const ACTIONS = new Set(["tap", "swipe", "type_text", "press_button", "launch_app"]);
+
+// Server-side context editing (beta context-management-2025-06-27). The API clears old
+// tool results before the model sees them, so the history we send stays append-only, which
+// preserved thinking requires: rewriting earlier turns client-side would invalidate it.
+// Clearing rewrites the prompt cache, so wait for a real backlog (trigger) and clear in
+// batches of at least 5k tokens instead of one screenshot per turn.
+const CONTEXT_EDITING_BETA = "context-management-2025-06-27";
+const clearOldToolResults = (keep: number): Anthropic.Beta.BetaClearToolUses20250919Edit => ({
+  type: "clear_tool_uses_20250919",
+  trigger: { type: "input_tokens", value: 20_000 },
+  keep: { type: "tool_uses", value: keep },
+  clear_at_least: { type: "input_tokens", value: 5_000 },
+});
 
 export async function execute(device: Device, name: string, input: Record<string, unknown>): Promise<ToolContent> {
   const n = (k: string) => {
@@ -169,9 +187,11 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       tools: TOOLS,
       messages,
       output_config: { effort: opts.effort ?? "medium" },
+      context_management: { edits: [clearOldToolResults(opts.keepToolUses ?? 5)] },
+      betas: [CONTEXT_EDITING_BETA],
     };
     if (opts.fallbacks ?? true) {
-      params.betas = ["server-side-fallback-2026-07-01"];
+      params.betas = [CONTEXT_EDITING_BETA, "server-side-fallback-2026-07-01"];
       params.fallbacks = "default";
     }
     const message = await createMessage(params);

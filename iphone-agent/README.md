@@ -48,7 +48,7 @@ Every action returns a fresh screenshot, so each turn is one observe → act cyc
 ```bash
 cd iphone-agent
 npm install
-npm test                                     # 7 tests against the fake iPhone
+npm test                                     # tests against the fake iPhone
 export ANTHROPIC_API_KEY=...                 # or: ant auth login
 npm run agent -- --mock "Turn off Wi-Fi in Settings"
 ```
@@ -101,7 +101,30 @@ claude mcp add iphone-mock -- node --experimental-strip-types /abs/path/iphone-a
 - `--confirm` asks y/N before every action that touches the device
 - `--model <id>` (default `claude-opus-5-5`), `--effort low|medium|high|xhigh|max` (default `medium`)
 - `--max-steps <n>` (default 30)
+- `--keep-tool-uses <n>` (default 5): how many recent tool results the model keeps once old ones are cleared (see [Context hygiene](#context-hygiene))
 - `--no-fallbacks` turns off server-side refusal fallbacks, which are on by default
+
+## Context hygiene
+
+Every action returns a point-resolution screenshot, about 440 image tokens on a 390x844 screen. Without pruning, a 30-step run would show the model every old frame.
+
+`runAgent` turns on the API's server-side context editing on every request (beta `context-management-2025-06-27`):
+
+```ts
+context_management: {
+  edits: [{
+    type: "clear_tool_uses_20250919",
+    trigger: { type: "input_tokens", value: 20_000 },
+    keep: { type: "tool_uses", value: 5 },          // RunOptions.keepToolUses / --keep-tool-uses
+    clear_at_least: { type: "input_tokens", value: 5_000 },
+  }],
+}
+```
+
+- Once the prompt passes 20k input tokens, the API replaces all but the newest 5 tool results (screenshots and `describe_ui` text) with a placeholder. The tool calls themselves stay visible.
+- Each clear rewrites the prompt cache, so a clear only happens when it removes at least 5k tokens. Clears come in batches rather than one screenshot per turn.
+- The harness never rewrites earlier turns. The request it sends is append-only, which preserved thinking on `claude-opus-5-5` requires. Clearing happens server-side and does not count as an edit. So the client payload still grows with every step; what the model sees is bounded.
+- The beta is sent with or without `--no-fallbacks`. With fallbacks on, `betas` is `["context-management-2025-06-27", "server-side-fallback-2026-07-01"]`.
 
 ## Safety
 
@@ -111,4 +134,3 @@ The system prompt tells the model to stop before passwords, purchases, sending m
 
 - **Run it from your phone.** Start the harness on the Mac inside Claude Code and drive it with Claude Code Remote Control (`claude --remote-control`) from the Claude iOS app. You give the iPhone a task from the iPhone itself.
 - **Mirroring backend.** Implement `Device` with `screencapture` of the iPhone Mirroring window and CGEvent clicks, for setups with no WDA signing.
-- **Context hygiene.** Keep only the last N screenshots on long tasks (context editing `clear_tool_uses_20250919`).

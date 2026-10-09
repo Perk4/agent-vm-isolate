@@ -3,7 +3,7 @@
 //   npm run agent -- --wda http://127.0.0.1:8100 --confirm "Open Notes and write 'milk'"
 //   npm run agent -- --mock "Turn off Wi-Fi"      (built-in fake iPhone, no device needed)
 //
-// Flags: --wda <url>  --model <id>  --effort <level>  --max-steps <n>
+// Flags: --wda <url>  --model <id>  --effort <level>  --max-steps <n>  --keep-tool-uses <n>
 //        --confirm (ask before each action)  --no-fallbacks  --mock
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -21,6 +21,7 @@ const { values, positionals } = parseArgs({
     model: { type: "string" },
     effort: { type: "string" },
     "max-steps": { type: "string" },
+    "keep-tool-uses": { type: "string" },
     confirm: { type: "boolean", default: false },
     "no-fallbacks": { type: "boolean", default: false },
     mock: { type: "boolean", default: false },
@@ -43,6 +44,12 @@ if (values.effort !== undefined && !isEffort(values.effort)) {
 const maxSteps = values["max-steps"] === undefined ? undefined : Number(values["max-steps"]);
 if (maxSteps !== undefined && (!Number.isInteger(maxSteps) || maxSteps < 1)) {
   console.error("--max-steps must be a positive integer");
+  process.exit(2);
+}
+
+const keepToolUses = values["keep-tool-uses"] === undefined ? undefined : Number(values["keep-tool-uses"]);
+if (keepToolUses !== undefined && (!Number.isInteger(keepToolUses) || keepToolUses < 0)) {
+  console.error("--keep-tool-uses must be a non-negative integer");
   process.exit(2);
 }
 
@@ -73,6 +80,7 @@ try {
     ...(values.model !== undefined ? { model: values.model } : {}),
     ...(values.effort !== undefined && isEffort(values.effort) ? { effort: values.effort } : {}),
     ...(maxSteps !== undefined ? { maxSteps } : {}),
+    ...(keepToolUses !== undefined ? { keepToolUses } : {}),
     fallbacks: !values["no-fallbacks"],
     ...(rl ? { approve: async (tool, input) => /^y/i.test(await rl.question(`allow ${tool} ${JSON.stringify(input)}? [y/N] `)) } : {}),
     onStep: (s) => console.error(`${s.ok ? "✓" : "✗"} ${s.tool} ${JSON.stringify(redact(s.tool, s.input))}${s.ok ? "" : ` -> ${s.note}`}`),
