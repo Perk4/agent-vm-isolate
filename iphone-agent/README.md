@@ -48,7 +48,7 @@ Every action returns a fresh screenshot, so each turn is one observe → act cyc
 ```bash
 cd iphone-agent
 npm install
-npm test                                     # 7 tests against the fake iPhone
+npm test                                     # unit + end-to-end tests against the fake iPhone
 export ANTHROPIC_API_KEY=...                 # or: ant auth login
 npm run agent -- --mock "Turn off Wi-Fi in Settings"
 ```
@@ -93,6 +93,39 @@ claude mcp add iphone-mock -- node --experimental-strip-types /abs/path/iphone-a
 - `IPHONE_MCP_READ_ONLY=1` exposes only `screenshot` and `describe_ui`.
 - `screenshot` and `describe_ui` are marked `readOnlyHint`, so clients can auto-allow them and still prompt for taps.
 - The repo-root `.mcp.json` registers `iphone-mock`. Any Claude Code session in this repo gets a fake iPhone to test its work against.
+
+### Over HTTP (remote clients)
+
+stdio only works when the client runs on the Mac the phone is plugged into. `--http [port]` serves the same tools over MCP Streamable HTTP at `/mcp` (default port 8765), so a client on another machine can use them, such as a cloud Claude Code session or the Claude app through a connector. stdio is still the default.
+
+```bash
+npm run mcp -- --http                 # http://127.0.0.1:8765/mcp, loopback only
+npm run mcp -- --mock --http 9000     # fake phone on port 9000
+claude mcp add --transport http iphone http://127.0.0.1:8765/mcp
+```
+
+This server controls a physical phone, so the defaults fail closed:
+
+- It binds `127.0.0.1`. Binding anything else needs an explicit `--host <addr>` **and** a bearer token in `IPHONE_MCP_TOKEN` (at least 32 characters, e.g. `openssl rand -hex 32`). Without the token, the server refuses to start.
+- When `IPHONE_MCP_TOKEN` is set (on any bind), every request needs `Authorization: Bearer <token>`. Anything else gets 401. The comparison is constant-time.
+- A non-loopback bind is **read-only** (`screenshot`, `describe_ui`) unless you also pass `--allow-actions`. `IPHONE_MCP_READ_ONLY=1` always wins.
+- Against DNS rebinding, the `Host` header (and `Origin`, when a browser sends one) must name a loopback address, the `--host` address, or a name given with `--allowed-host <name>` (repeatable). Otherwise the server answers 403. A wildcard bind such as `0.0.0.0` needs `--allowed-host` for every name clients will use.
+- The server is stateless: only `POST /mcp` is served, with no sessions and no server-initiated stream.
+
+**Reach it through a tunnel, not an open port.** [Tailscale](https://tailscale.com) puts the Mac and the client on a private, encrypted network, so nothing is exposed to the internet or the LAN:
+
+```bash
+# on the Mac with the phone (100.x.y.z is `tailscale ip -4`)
+export IPHONE_MCP_TOKEN=$(openssl rand -hex 32)
+npm run mcp -- --http --host 100.x.y.z --allowed-host mac.your-tailnet.ts.net            # read-only
+npm run mcp -- --http --host 100.x.y.z --allowed-host mac.your-tailnet.ts.net --allow-actions
+
+# on the client machine, in the same tailnet
+claude mcp add --transport http iphone http://mac.your-tailnet.ts.net:8765/mcp \
+  --header "Authorization: Bearer $IPHONE_MCP_TOKEN"
+```
+
+Alternatively, keep the default loopback bind and let `tailscale serve 8765` proxy it with HTTPS inside the tailnet. If requests come back 403 `Host not allowed`, add `--allowed-host mac.your-tailnet.ts.net`. Set `IPHONE_MCP_TOKEN` in this setup too: the bind is loopback, so nothing else forces a token or read-only mode, and the proxy makes every tailnet device look local. Use Tailscale ACLs to limit which devices can reach the Mac. Don't use `tailscale funnel` or router port forwarding: they publish the phone to the internet.
 
 ## CLI flags
 

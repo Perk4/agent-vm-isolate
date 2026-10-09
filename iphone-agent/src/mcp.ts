@@ -8,6 +8,9 @@
 //
 // Env: WDA_URL (default http://127.0.0.1:8100), IPHONE_MCP_READ_ONLY=1 to expose
 // only screenshot and describe_ui.
+//
+// `--http [port]` serves Streamable HTTP instead (default 127.0.0.1:8765); see
+// mcp-http.ts for the exposure rules and README.md for flags.
 
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -16,6 +19,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { ACTIONS, execute, TOOLS, type ToolContent } from "./agent.ts";
 import { IPhone, type Device } from "./device.ts";
+// Circular on purpose: mcp-http.ts uses createPhoneMcpServer only inside functions, so either
+// module can load first. A dynamic import here would deadlock against this file's top-level await.
+import { parseHttpArgs, startPhoneHttpServer } from "./mcp-http.ts";
 import { startMockWda } from "./mock-wda.ts";
 import { WdaClient } from "./wda.ts";
 
@@ -72,8 +78,22 @@ function toMcp(content: ToolContent): CallToolResult["content"] {
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const mock = process.argv.includes("--mock") ? await startMockWda() : null;
   const wda = new WdaClient(mock?.url ?? process.env.WDA_URL ?? "http://127.0.0.1:8100");
-  const server = createPhoneMcpServer(new IPhone(wda), { readOnly: process.env.IPHONE_MCP_READ_ONLY === "1" });
-  await server.connect(new StdioServerTransport());
-  // stdout carries the protocol; diagnostics go to stderr.
-  console.error(`iphone-agent MCP server on stdio, WDA at ${wda.baseUrl}${mock ? " (mock)" : ""}`);
+  const readOnly = process.env.IPHONE_MCP_READ_ONLY === "1";
+  if (process.argv.includes("--http")) {
+    try {
+      const opts = parseHttpArgs(process.argv.slice(2), process.env.IPHONE_MCP_TOKEN);
+      const http = await startPhoneHttpServer(new IPhone(wda), { ...opts, readOnly });
+      console.error(
+        `iphone-agent MCP server on ${http.url}${http.readOnly ? " (read-only)" : ""}, WDA at ${wda.baseUrl}${mock ? " (mock)" : ""}`,
+      );
+    } catch (err) {
+      console.error(`iphone-agent MCP: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  } else {
+    const server = createPhoneMcpServer(new IPhone(wda), { readOnly });
+    await server.connect(new StdioServerTransport());
+    // stdout carries the protocol; diagnostics go to stderr.
+    console.error(`iphone-agent MCP server on stdio, WDA at ${wda.baseUrl}${mock ? " (mock)" : ""}`);
+  }
 }

@@ -3,7 +3,7 @@
 ## Layout
 
 - `src/`: root package `isolate` (container vs VM isolation contract). Zero dependencies. Tests in `src/isolate.test.ts`, fixtures in `fixtures/`.
-- `iphone-agent/`: separate npm package (own `package.json` + `package-lock.json`). WebDriverAgent harness that lets Claude drive an iPhone: `agent.ts` (loop, tools, approve gate), `wda.ts` (WDA client), `device.ts` (points-only view), `png.ts`, `mock-wda.ts` (fake iPhone), `cli.ts`, `mcp.ts` (same tools as an MCP server). Root `.mcp.json` registers `iphone-mock`, a mock-backed MCP server for testing your work.
+- `iphone-agent/`: separate npm package (own `package.json` + `package-lock.json`). WebDriverAgent harness that lets Claude drive an iPhone: `agent.ts` (loop, tools, approve gate), `wda.ts` (WDA client), `device.ts` (points-only view), `png.ts`, `mock-wda.ts` (fake iPhone), `cli.ts`, `mcp.ts` (same tools as an MCP server), `mcp-http.ts` (its Streamable HTTP mode: loopback by default, token + read-only beyond it). Root `.mcp.json` registers `iphone-mock`, a mock-backed MCP server for testing your work.
 - `scripts/anti-slop.sh`: grep-based anti-pattern check (see `REVIEW.md`). `.claude/skills/anti-slop/`: the same rules plus judgment-only ones, as a skill (adapted from dmmulroy/anti-slop, see its `UPSTREAM.md`). Load it before writing `.ts`.
 - `.github/`: CI, Claude review/`@claude` workflow (`claude-review.yml`, setup in `docs/ci.md`), PR/issue templates, CODEOWNERS. `REVIEW.md`: what blocks a PR.
 - `thoughts/plans/`: implementation plans (`/create_plan`, `/validate_plan`).
@@ -64,3 +64,5 @@ Add entries when something bites you. Keep each to one or two lines.
 - After a device action succeeds, never report the step as failed because the follow-up screenshot failed. The model will repeat the action (double taps, duplicate text).
 - Every loop exit path, `pause_turn` included, must count against `maxSteps`.
 - WDA can report an error with HTTP 200, as a `{ value: { error } }` body or a legacy non-zero `status`. Check the body, not just `res.ok`.
+- A module with top-level `await` must not dynamically `import()` a module that imports it back: the cycle deadlocks silently. Use a static import.
+- MCP SDK 1.32 Streamable HTTP transports don't type-check as `Transport` under `exactOptionalPropertyTypes` (accessors return `T | undefined`). Use `@ts-expect-error` with that reason, not a cast chain.
