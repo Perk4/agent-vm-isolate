@@ -1,9 +1,9 @@
 # Learnings log
 
-Written by `/learn`. Each run appends an entry: the date, the merged PRs it mined, `Last PR mined: #N`, and every rule it added and where it went. The newest entry's `Last PR mined` is where the next run starts (by PR number, not date).
+Written by `/learn`. Each run appends an entry: the date, every merged PR it mined, `Mined through: <ISO timestamp>`, and every rule it added and where it went. The next run searches from the newest `Mined through` minus one day and skips any PR already listed under "PRs mined" in any entry (old PRs can merge after newer ones, so PR numbers are not a cursor).
 
 ## 2026-10-09: seed
 
-- PRs mined: none. Baseline is PR #2 (factory setup: CLAUDE.md Learnings, REVIEW.md, `scripts/anti-slop.sh`). Its rules were written by hand, not mined.
-- Last PR mined: #2 (the next run mines merged PRs numbered above it).
+- PRs mined: #2 (baseline: factory setup, CLAUDE.md Learnings, REVIEW.md, `scripts/anti-slop.sh`; its rules were written by hand).
+- Mined through: 2026-10-09T03:42:58Z (when #2 merged).
 - Rules added: none.
