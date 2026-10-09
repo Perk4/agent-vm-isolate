@@ -65,3 +65,4 @@ Add entries when something bites you. Keep each to one or two lines.
 - Every loop exit path, `pause_turn` included, must count against `maxSteps`.
 - WDA can report an error with HTTP 200, as a `{ value: { error } }` body or a legacy non-zero `status`. Check the body, not just `res.ok`.
 - A tool `input_schema` can't put `oneOf`/`anyOf`/`allOf` at the root (the Messages API refuses it, and MCP clients forward `inputSchema` there), and strict mode has no `oneOf` at all. For either/or input, make the fields optional and check the shape in `execute()` (see `tap`).
+- To shrink old screenshots/tool results, use server-side context editing (`context_management`, beta `context-management-2025-06-27`), never a client-side prune: edited history invalidates preserved thinking on `claude-opus-5-5`. Tests assert requests stay append-only.

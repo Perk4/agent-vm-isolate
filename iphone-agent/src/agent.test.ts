@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import { execute, runAgent, TOOLS, type CreateMessage } from "./agent.ts";
+import { clearOldToolResults, execute, runAgent, TOOLS, type CreateMessage } from "./agent.ts";
 import { flattenUi, IPhone } from "./device.ts";
 import { startMockWda, type MockWda } from "./mock-wda.ts";
 import { decodePng, encodePng, resize } from "./png.ts";
@@ -111,7 +111,7 @@ test("agent loop: model drives Settings to turn Wi-Fi off", async () => {
   const first = model.seen[0]!;
   assert.equal(first.model, "claude-opus-5-5");
   assert.equal(first.fallbacks, "default");
-  assert.deepEqual(first.betas, ["server-side-fallback-2026-07-01"]);
+  assert.deepEqual(first.betas, ["context-management-2025-06-27", "server-side-fallback-2026-07-01"]);
   assert.deepEqual(first.output_config, { effort: "medium" });
   assert.deepEqual(first.tools!.map((t) => (t as { name: string }).name), TOOLS.map((t) => t.name));
 
@@ -141,6 +141,69 @@ test("agent loop: tap field, type, save a note; errors go back as is_error", asy
   assert.match(failed[0]!.note, /Keyboard is not present/);
   const errResult = (model.seen[2]!.messages.at(-1)!.content as Anthropic.Beta.BetaToolResultBlockParam[])[0]!;
   assert.equal(errResult.is_error, true);
+});
+
+const clearEdit = clearOldToolResults;
+
+test("30-step run: every request asks the API to clear old tool results; history stays append-only", async () => {
+  reset();
+  const model = scripted(Array.from({ length: 30 }, () => [{ name: "screenshot", input: {} }]));
+  const result = await runAgent({ task: "x", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create });
+  assert.equal(result.steps.length, 30);
+  assert.equal(model.seen.length, 31);
+
+  for (const req of model.seen) {
+    assert.deepEqual(req.context_management, { edits: [clearEdit(5)] });
+    assert.deepEqual(req.betas, ["context-management-2025-06-27", "server-side-fallback-2026-07-01"]);
+    assert.equal(req.fallbacks, "default");
+  }
+
+  // Each request repeats the previous one's messages byte for byte and only appends.
+  for (let k = 1; k < model.seen.length; k++) {
+    const prev = model.seen[k - 1]!.messages;
+    const next = model.seen[k]!.messages;
+    assert.equal(next.length, prev.length + 2);
+    assert.equal(JSON.stringify(next.slice(0, prev.length)), JSON.stringify(prev));
+  }
+
+  // Pruning is the server's job: the client still sends every screenshot.
+  const images = model.seen.at(-1)!.messages.flatMap((m) =>
+    typeof m.content === "string"
+      ? []
+      : m.content.flatMap((b) => (b.type === "tool_result" && Array.isArray(b.content) ? b.content.filter((c) => c.type === "image") : [])),
+  );
+  assert.equal(images.length, 30);
+});
+
+test("context editing without fallbacks keeps its beta; keepToolUses sets the kept count", async () => {
+  reset();
+  const model = scripted([[{ name: "screenshot", input: {} }], "done"]);
+  await runAgent({ task: "x", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create, fallbacks: false, keepToolUses: 2 });
+  for (const req of model.seen) {
+    assert.deepEqual(req.betas, ["context-management-2025-06-27"]);
+    assert.equal(req.fallbacks, undefined);
+    assert.deepEqual(req.context_management, { edits: [clearEdit(2)] });
+  }
+});
+
+test("context editing: the default edit's numbers, a trigger that grows with keep, and bad keep values", async () => {
+  assert.deepEqual(clearOldToolResults(5), {
+    type: "clear_tool_uses_20250919",
+    trigger: { type: "input_tokens", value: 20_000 },
+    keep: { type: "tool_uses", value: 5 },
+    clear_at_least: { type: "input_tokens", value: 5_000 },
+  });
+  // 40 kept screenshots alone are ~17.6k tokens; a fixed 20k trigger would rarely leave 5k clearable.
+  assert.equal(clearOldToolResults(40).trigger?.value, 50_000);
+
+  for (const bad of [0, -1, 2.5, Number.NaN]) {
+    const model = scripted(["done"]);
+    await assert.rejects(
+      runAgent({ task: "x", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create, keepToolUses: bad }),
+      RangeError,
+    );
+    assert.equal(model.seen.length, 0, `keepToolUses ${bad} must fail before any API call`);
+  }
 });
 
 test("approve gate blocks actions before they reach the device; maxSteps caps the loop", async () => {
