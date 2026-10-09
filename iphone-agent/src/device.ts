@@ -33,6 +33,7 @@ type UiNode = {
   value?: string | null;
   rect?: Rect;
   isEnabled?: boolean | string;
+  isVisible?: boolean | string;
   children?: UiNode[];
 };
 
@@ -53,7 +54,10 @@ function uiElements(root: unknown, max: number): UiListing {
   const walk = (n: UiNode) => {
     const kind = (n.type ?? "").replace("XCUIElementType", "");
     const text = n.label || n.name || "";
-    if (n.rect && (text || n.value) && !SKIP.has(kind) && n.rect.width > 0 && n.rect.height > 0) {
+    // Hidden nodes get no ref: tapping a hidden element's frame would hit whatever is visible there.
+    // A visible element turning hidden drops out of the listing, so the fingerprint changes too.
+    const visible = !(n.isVisible === false || n.isVisible === "0");
+    if (visible && n.rect && (text || n.value) && !SKIP.has(kind) && n.rect.width > 0 && n.rect.height > 0) {
       total++;
       if (elements.length < max) {
         const { x, y, width, height } = n.rect;

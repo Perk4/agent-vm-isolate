@@ -515,3 +515,17 @@ test("a control whose state changed out of band makes refs stale", async () => {
   await assert.rejects(execute(phone, "tap", { ref: "e4" }), /e4 is stale: the screen changed/);
   assert.equal(mock.state.wifi, false);
 });
+
+test("hidden elements get no ref, and an element turning hidden makes refs stale", async () => {
+  const shown = { ...button("Shown", 10, 10) };
+  const hidden = { ...button("Hidden", 10, 40), isVisible: "0" };
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [shown, hidden] } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  const ui = await phone.describeUi();
+  assert.match(ui, /e1 Button "Shown"/);
+  assert.doesNotMatch(ui, /Hidden/);
+  state.tree = { type: "XCUIElementTypeApplication", children: [{ ...shown, isVisible: "0" }, hidden] };
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
