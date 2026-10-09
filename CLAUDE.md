@@ -4,8 +4,8 @@
 
 - `src/`: root package `isolate` (container vs VM isolation contract). Zero dependencies. Tests in `src/isolate.test.ts`, fixtures in `fixtures/`.
 - `iphone-agent/`: separate npm package (own `package.json` + `package-lock.json`). WebDriverAgent harness that lets Claude drive an iPhone: `agent.ts` (loop, tools, approve gate), `wda.ts` (WDA client), `device.ts` (points-only view), `png.ts`, `mock-wda.ts` (fake iPhone), `cli.ts`, `mcp.ts` (same tools as an MCP server). Root `.mcp.json` registers `iphone-mock`, a mock-backed MCP server for testing your work.
-- `scripts/anti-slop.sh`: grep-based anti-pattern check (see `REVIEW.md`).
-- `.github/`: CI, PR/issue templates, CODEOWNERS. `REVIEW.md`: what blocks a PR.
+- `scripts/anti-slop.sh`: grep-based anti-pattern check (see `REVIEW.md`). `.claude/skills/anti-slop/`: the same rules plus judgment-only ones, as a skill (adapted from dmmulroy/anti-slop, see its `UPSTREAM.md`). Load it before writing `.ts`.
+- `.github/`: CI, Claude review/`@claude` workflow (`claude-review.yml`, setup in `docs/ci.md`), PR/issue templates, CODEOWNERS. `REVIEW.md`: what blocks a PR.
 - `thoughts/plans/`: implementation plans (`/create_plan`, `/validate_plan`).
 
 ## Commands
@@ -49,6 +49,9 @@ Skip the plan for small changes (one file or under ~50 lines): implement, test, 
 6. Keep PRs small (one plan phase or one fix). Fill in `.github/pull_request_template.md`, link the plan.
 
 Never edit or delete a test to make it pass. A failing test is a finding: fix the code, or explain in the PR why the test was wrong.
+
+**Starting work in a new session:** `/start_ticket <issue>` for a ticket, `/handoff` before a session ends mid-ticket, `/plan_next` when the batch is done.
+Kickoff prompts, parallel-safe ticket groups and the recommended order are in [docs/sessions.md](docs/sessions.md).
 
 ## Learnings
 

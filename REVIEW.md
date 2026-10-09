@@ -1,6 +1,6 @@
 # Review guidelines
 
-Applied by Claude Code Review and by human reviewers. Review the diff against these rules, in this order. Lead with blockers; label everything else as a nit. Don't restate what CI already enforces (tests, typecheck, anti-slop) unless CI missed it.
+Applied by Claude review (`.github/workflows/claude-review.yml`) and by human reviewers, together with the anti-slop skill (`.claude/skills/anti-slop/SKILL.md`). Review the diff against these rules, in this order. Lead with blockers; label everything else as a nit. Don't restate what CI already enforces (tests, typecheck, anti-slop) unless CI missed it.
 
 ## Blocks merge
 
@@ -48,7 +48,7 @@ Prefix these with `nit:` so authors (and agents) can triage.
 
 ## Anti-slop list
 
-`scripts/anti-slop.sh` enforces these in non-test `.ts` under `src/` and `iphone-agent/src/`. Reviewers also flag the ones a grep can't catch.
+`scripts/anti-slop.sh` enforces these in non-test `.ts` under `src/` and `iphone-agent/src/`. It also enforces chained type assertions (non-test), `Reflect.apply`/`Reflect.get`, and module mocking, ported from dmmulroy/anti-slop. Reviewers also flag the ones a grep can't catch, including the skill's `[review]` rules (e.g. `// SAFETY:` justification on new `as` casts).
 
 | Pattern | Why | Instead |
 | --- | --- | --- |
