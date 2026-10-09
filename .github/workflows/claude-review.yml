@@ -1,0 +1,147 @@
+name: Claude
+
+# LLM-judgment layer on top of CI (ci.yml). One-time setup: docs/ci.md.
+# - review:   every PR push gets a review against REVIEW.md and the anti-slop
+#             skill (.claude/skills/anti-slop/SKILL.md), as inline comments.
+# - claude:   "@claude ..." in a PR/issue comment or review, or the
+#             `agent-ready` label on an issue: Claude works on it, commits to
+#             the PR branch (or to a new claude/ branch with a "Create PR" link).
+# Both jobs skip, not fail, when no Claude credential secret is configured
+# (forks never receive secrets).
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  review:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check for a Claude credential
+        id: auth
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          echo "ok=$HAS_KEY" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::notice::Claude review skipped: no ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN secret (see docs/ci.md)."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.auth.outputs.ok == 'true'
+        with:
+          fetch-depth: 1
+
+      - name: Review PR
+        if: steps.auth.outputs.ok == 'true'
+        # v1.0.245; bump deliberately.
+        uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The workflow token, scoped by the permissions above: no app token,
+          # no id-token, and no write access to code.
+          github_token: ${{ github.token }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. Get the diff with `gh pr diff` and the
+            description with `gh pr view`, and read surrounding code as needed.
+
+            Review against, in this order:
+            1. REVIEW.md: the "Blocks merge" section first, then nits.
+            2. .claude/skills/anti-slop/SKILL.md: especially the rules marked
+               [review]. CI already enforces [CI] rules, tests and typecheck;
+               don't repeat those unless CI would miss the case.
+            3. CLAUDE.md conventions (points not pixels, approve gate, errors
+               as is_error tool_results, erasable-only TypeScript).
+
+            Note: on a PR, `.claude/` and CLAUDE.md are restored from the base
+            branch; if the PR changes them, the PR's version is in `.claude-pr/`.
+
+            Post each finding as an inline comment on the exact line with
+            mcp__github_inline_comment__create_inline_comment. Start blockers
+            with "blocker:" and everything else with "nit:". Cite the rule.
+            Only comment on lines this PR changed. Don't praise, don't restate
+            the diff, and don't comment when there is nothing to fix.
+            Then post one short summary with `gh pr comment`: the blocker
+            count, nit count, and a one-line verdict.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+
+  claude:
+    if: >-
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && github.event.label.name == 'agent-ready')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      # Exchanged for a Claude GitHub App token, so Claude's pushes trigger CI
+      # (pushes made with GITHUB_TOKEN do not).
+      id-token: write
+      actions: read
+    steps:
+      - name: Check for a Claude credential
+        id: auth
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          echo "ok=$HAS_KEY" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::notice::Claude skipped: no ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN secret (see docs/ci.md)."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.auth.outputs.ok == 'true'
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        if: steps.auth.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      - name: Run Claude
+        if: steps.auth.outputs.ok == 'true'
+        # v1.0.245; bump deliberately.
+        uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          label_trigger: agent-ready
+          additional_permissions: |
+            actions: read
+          claude_args: |
+            --allowedTools "Bash(npm ci),Bash(npm test),Bash(npm run typecheck),Bash(npm --prefix iphone-agent ci),Bash(npm --prefix iphone-agent test),Bash(npm --prefix iphone-agent run typecheck),Bash(npm install --no-save --no-package-lock --no-audit --no-fund typescript@5.9.3 @types/node@22),Bash(npx --no-install tsc -p .),Bash(bash scripts/anti-slop.sh)"
+            --append-system-prompt "Follow CLAUDE.md and its Workflow section. Load the anti-slop skill before writing code. Before each commit, run bash scripts/anti-slop.sh, root npm test, and npm --prefix iphone-agent ci/run typecheck/test. Never edit or delete a test to make it pass."
