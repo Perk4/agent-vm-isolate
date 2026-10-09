@@ -5,8 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/stop-check.sh",
-            "timeout": 60
+            "command": "r=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; [ -f \"$r/scripts/stop-check.sh\" ] || r=\"$CLAUDE_PROJECT_DIR\"; exec bash \"$r/scripts/stop-check.sh\"",
+            "timeout": 120
           }
         ]
       }

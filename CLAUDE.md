@@ -50,7 +50,7 @@ Skip the plan for small changes (one file or under ~50 lines): implement, test, 
 
 Never edit or delete a test to make it pass. A failing test is a finding: fix the code, or explain in the PR why the test was wrong.
 
-Back-pressure: the Stop hook (`.claude/settings.json` → `scripts/stop-check.sh`) runs tests, typecheck and anti-slop when `.ts` changed, and blocks the stop with only the failures. Fix them; don't disable it. Run `/learn` after a batch of merges to turn review findings into Learnings, anti-slop rules and REVIEW.md items.
+Back-pressure: the Stop hook (`.claude/settings.json` → `scripts/stop-check.sh`, run in the session's repo or worktree) runs root tests + typecheck, anti-slop, and iphone-agent typecheck + tests (running `npm ci` there first if `node_modules` is missing) whenever `.ts`, `fixtures/`, `scripts/`, the anti-slop skill, or a `package*.json`/`tsconfig.json` changed (uncommitted, untracked or unpushed). Silent when green; otherwise it blocks the stop with only the failures, at most 3 times per session (reset on a green run), then lets you stop: say what is still broken. Fix the failures; don't disable it. Run `/learn` after a batch of merges to turn review findings into Learnings, anti-slop rules and REVIEW.md items.
 
 **Starting work in a new session:** `/start_ticket <issue>` for a ticket, `/handoff` before a session ends mid-ticket, `/plan_next` when the batch is done.
 Kickoff prompts, parallel-safe ticket groups and the recommended order are in [docs/sessions.md](docs/sessions.md).
