@@ -70,7 +70,10 @@ dot="${NODE_OPTIONS:-} --test-reporter=dot"
 run "root npm test" env NODE_OPTIONS="$dot" npm test --silent
 run "anti-slop" bash scripts/anti-slop.sh
 deps_ok=1
-if [ ! -d iphone-agent/node_modules ]; then
+# Reinstall when node_modules is missing or older than the manifests (npm ci writes
+# node_modules/.package-lock.json): a changed lockfile otherwise tests the old tree.
+stamp=iphone-agent/node_modules/.package-lock.json
+if [ ! -f "$stamp" ] || [ iphone-agent/package.json -nt "$stamp" ] || [ iphone-agent/package-lock.json -nt "$stamp" ]; then
   # A failed install can leave a partial node_modules: remove it so the next
   # run retries (npm ci deletes it first anyway), and skip the checks that
   # need it rather than burying the npm error under missing-module noise.
