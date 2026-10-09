@@ -122,9 +122,10 @@ export class IPhone implements Device {
 
   async describeUi(): Promise<string> {
     const epoch = this.epoch;
-    const ui = uiElements(await this.wda.source("json"), MAX_ELEMENTS);
+    const source = await this.wda.source("json");
+    const ui = uiElements(source, MAX_ELEMENTS);
     // An action that ran while /source was in flight may have changed the screen under this listing.
-    if (epoch === this.epoch) this.refs = { epoch, byRef: new Map(ui.elements.map((e) => [e.ref, e])), layout: layout(ui) };
+    if (epoch === this.epoch) this.refs = { epoch, byRef: new Map(ui.elements.map((e) => [e.ref, e])), layout: layout(uiElements(source, Infinity)) };
     return formatUi(ui);
   }
 
@@ -138,14 +139,17 @@ export class IPhone implements Device {
       throw new Error(`unknown ref ${ref}: the last describe_ui ${listed}. ${REFRESH}`);
     }
     const c = center(target.rect);
-    const size = await this.points();
+    // Fresh, not the cached size: after a rotation the window is landscape and the cache is stale.
+    const size = await this.wda.windowSize();
+    this.size = size;
     if (c.x < 0 || c.y < 0 || c.x >= size.width || c.y >= size.height) {
       throw new Error(`ref ${ref} is off-screen at (${Math.round(c.x)},${Math.round(c.y)}): swipe it into view, then call describe_ui again.`);
     }
     // The screen can change without our tools (an alert, a notification, a slow transition), so the
     // whole layout must still match what describe_ui saw before tapping there.
     const epoch = this.epoch;
-    const now = layout(uiElements(await this.wda.source("json"), MAX_ELEMENTS));
+    // Every qualifying element, not just the 150 listed, so a change past the cap still counts.
+    const now = layout(uiElements(await this.wda.source("json"), Infinity));
     if (epoch !== this.epoch || now !== cached.layout) {
       // Expire the listing but keep it, so a retry with another ref still reads "stale".
       if (this.refs === cached) this.refs = { ...cached, epoch: -1 };

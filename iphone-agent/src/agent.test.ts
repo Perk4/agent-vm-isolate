@@ -400,3 +400,43 @@ test("the approve gate sees what a ref resolves to, not just its name", async ()
   assert.deepEqual(result.steps.at(-1)!.input, { ref: "e4", target: 'Switch "Wi-Fi" at (346,146)' });
   assert.equal(mock.state.wifi, false);
 });
+
+/** A WDA stand-in serving a fixed tree, for screens the mock can't draw. */
+function fakeWda(state: { tree: unknown; size: { width: number; height: number } }) {
+  const taps: [number, number][] = [];
+  const wda = {
+    source: async () => state.tree,
+    windowSize: async () => state.size,
+    screenshot: async () =>
+      encodePng({ width: state.size.width, height: state.size.height, rgb: Buffer.alloc(state.size.width * state.size.height * 3) }).toString("base64"),
+    tap: async (x: number, y: number) => void taps.push([x, y]),
+  };
+  return { wda: wda as unknown as WdaClient, taps };
+}
+
+const button = (label: string, x: number, y: number) => ({
+  type: "XCUIElementTypeButton", label, rect: { x, y, width: 40, height: 20 }, children: [],
+});
+
+test("ref staleness covers elements past the 150 listed", async () => {
+  const buttons = Array.from({ length: 200 }, (_, i) => button(`b${i}`, 10, 10 + i));
+  const state = { tree: { type: "XCUIElementTypeApplication", children: buttons }, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  assert.match(await phone.describeUi(), /\.\.\. 50 more elements/);
+  // Element 180 is never listed, but an overlay replacing it still changes the screen.
+  state.tree = { ...state.tree, children: buttons.map((b, i) => (i === 180 ? button("Allow", 10, 190) : b)) };
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("after a rotation, a ref on the right of a landscape screen is on-screen", async () => {
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [button("Right", 700, 100)] }, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  await phone.screenshot(); // caches the portrait window size, as a real session would
+  state.size = { width: 844, height: 390 };
+  await phone.describeUi();
+  await phone.tapRef("e1");
+  assert.deepEqual(taps, [[720, 110]]);
+});
