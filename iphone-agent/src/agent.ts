@@ -104,6 +104,15 @@ export type RunOptions = {
 
 export type RunResult = { answer: string; steps: Step[]; stopReason: string };
 
+/**
+ * The input an approver sees. A tap by ref gets a `target` naming the element it resolves to,
+ * because `{"ref":"e7"}` alone doesn't tell a human whether e7 is "Cancel" or "Buy".
+ */
+export function approvalInput(device: Device, name: string, input: Record<string, unknown>): Record<string, unknown> {
+  if (name !== "tap" || typeof input.ref !== "string") return input;
+  return { ...input, target: device.describeRef(input.ref) ?? "unknown or stale ref (the tap will be refused)" };
+}
+
 /** Tools that change device state; these go through the approve gate. */
 export const ACTIONS = new Set(["tap", "swipe", "type_text", "press_button", "launch_app"]);
 
@@ -210,11 +219,13 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     const results: ToolResult[] = [];
     for (const use of uses) {
       const input = (use.input ?? {}) as Record<string, unknown>;
+      // Resolve a tap's ref before acting: once the tap runs, the ref is stale.
+      const shown = approvalInput(device, use.name, input);
       let content: ToolContent;
       let ok = true;
       let note = "ok";
       try {
-        if (ACTIONS.has(use.name) && opts.approve && !(await opts.approve(use.name, input))) {
+        if (ACTIONS.has(use.name) && opts.approve && !(await opts.approve(use.name, shown))) {
           throw new Error("action denied by the operator");
         }
         content = await execute(device, use.name, input);
@@ -223,7 +234,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         note = err instanceof Error ? err.message : String(err);
         content = note;
       }
-      const step = { tool: use.name, input, ok, note };
+      const step = { tool: use.name, input: shown, ok, note };
       steps.push(step);
       opts.onStep?.(step);
       // All results go back in one user message so parallel calls keep working.

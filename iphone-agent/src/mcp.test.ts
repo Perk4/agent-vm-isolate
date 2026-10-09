@@ -17,7 +17,7 @@ before(async () => {
 after(() => mock.close());
 
 async function connect(opts: PhoneServerOptions = {}) {
-  Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [] });
+  Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [], alert: null });
   const server = createPhoneMcpServer(new IPhone(new WdaClient(mock.url)), opts);
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });

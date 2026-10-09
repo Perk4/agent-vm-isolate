@@ -30,6 +30,8 @@ export type DeviceState = {
   draft: string;
   focused: boolean;
   notes: string[];
+  /** A system alert drawn over the current app (e.g. a permission prompt). Any tap answers it. */
+  alert: string | null;
 };
 
 export const SCREEN = { width: 390, height: 844, scale: 3 } as const;
@@ -44,6 +46,16 @@ function el(type: string, label: string, rect: Rect, value: string | null = null
 }
 
 export function tree(s: DeviceState): Element {
+  const app = appTree(s);
+  if (!s.alert) return app;
+  // Like WDA, the alert comes after the app's own elements in document order.
+  const alert = el("Alert", s.alert, { x: 40, y: 300, width: 310, height: 160 }, null, [
+    el("Button", "Allow", { x: 40, y: 410, width: 310, height: 50 }),
+  ]);
+  return { ...app, children: [...app.children, alert] };
+}
+
+function appTree(s: DeviceState): Element {
   const full = { x: 0, y: 0, width: SCREEN.width, height: SCREEN.height };
   if (s.app === "home") {
     const icons = APPS.map((a, i) => el("Icon", a.label, { x: 30 + i * 90, y: 80, width: 64, height: 64 }));
@@ -57,6 +69,8 @@ export function tree(s: DeviceState): Element {
       el("Cell", "Wi-Fi", { x: 0, y: 120, width: 390, height: 50 }, null, [
         el("Switch", "Wi-Fi", { x: 320, y: 130, width: 51, height: 31 }, s.wifi ? "1" : "0"),
       ]),
+      // Scrolled below the 844-point screen.
+      el("Cell", "Privacy", { x: 0, y: 900, width: 390, height: 50 }),
     ]);
   }
   const saved = s.notes.map((n, i) => el("StaticText", n, { x: 16, y: 260 + i * 36, width: 358, height: 32 }));
@@ -83,6 +97,11 @@ function hit(e: Element, x: number, y: number): Element | null {
 }
 
 export function tap(s: DeviceState, x: number, y: number): void {
+  if (s.alert) {
+    // The alert is modal: the tap answers it and reaches nothing underneath.
+    s.alert = null;
+    return;
+  }
   const target = hit(tree(s), x, y);
   const kind = target?.type.replace("XCUIElementType", "");
   s.focused = kind === "TextField";
@@ -141,7 +160,7 @@ export type MockWda = {
 };
 
 export async function startMockWda(port = 0): Promise<MockWda> {
-  const state: DeviceState = { app: "home", wifi: true, draft: "", focused: false, notes: [] };
+  const state: DeviceState = { app: "home", wifi: true, draft: "", focused: false, notes: [], alert: null };
   const log: string[] = [];
   let sessions = 0;
   let sessionId = "";

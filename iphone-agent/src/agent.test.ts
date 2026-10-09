@@ -17,7 +17,7 @@ before(async () => {
 after(() => mock.close());
 
 function reset() {
-  Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [] });
+  Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [], alert: null });
   mock.log.length = 0;
 }
 
@@ -293,4 +293,47 @@ test("tap input: unknown ref, ref before describe_ui, both forms, and neither fo
   await assert.rejects(execute(phone, "tap", { x: 1 }), /y must be a number/);
   assert.ok(!mock.log.includes("POST /wda/tap"));
   assert.equal(mock.state.app, "home");
+});
+
+test("an alert that appears over the screen makes every ref stale; the tap never reaches it", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.launchApp("com.apple.Preferences");
+  await phone.describeUi();
+  mock.state.alert = "Allow Notes to use your location?"; // appears without going through our tools
+  await assert.rejects(execute(phone, "tap", { ref: "e4" }), /e4 is stale: the screen changed/);
+  assert.equal(mock.state.alert, "Allow Notes to use your location?", "the alert was not answered");
+  assert.equal(mock.state.wifi, true);
+  // A retry with another ref still says stale, not "call describe_ui first".
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /e1 is stale/);
+  mock.state.alert = null;
+});
+
+test("a ref whose element is off-screen is refused instead of tapping outside the screen", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.launchApp("com.apple.Preferences");
+  assert.match(await phone.describeUi(), /e5 Cell "Privacy" center=\(195,925\)/);
+  await assert.rejects(execute(phone, "tap", { ref: "e5" }), /e5 is off-screen at \(195,925\): swipe it into view/);
+  assert.ok(!mock.log.some((l) => l === "POST /wda/tap"));
+});
+
+test("the approve gate sees what a ref resolves to, not just its name", async () => {
+  reset();
+  const seen: Record<string, unknown>[] = [];
+  const model = scripted([
+    [{ name: "launch_app", input: { bundle_id: "com.apple.Preferences" } }],
+    [{ name: "describe_ui", input: {} }],
+    [{ name: "tap", input: { ref: "e4" } }],
+    "done",
+  ]);
+  const result = await runAgent({
+    task: "x",
+    device: new IPhone(new WdaClient(mock.url)),
+    createMessage: model.create,
+    approve: (_tool, input) => (seen.push(input), true),
+  });
+  assert.deepEqual(seen.at(-1), { ref: "e4", target: 'Switch "Wi-Fi" at (346,146)' });
+  assert.deepEqual(result.steps.at(-1)!.input, { ref: "e4", target: 'Switch "Wi-Fi" at (346,146)' });
+  assert.equal(mock.state.wifi, false);
 });

@@ -14,7 +14,7 @@ import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import { ACTIONS, execute, TOOLS, type ToolContent } from "./agent.ts";
+import { ACTIONS, approvalInput, execute, TOOLS, type ToolContent } from "./agent.ts";
 import { IPhone, type Device } from "./device.ts";
 import { startMockWda } from "./mock-wda.ts";
 import { WdaClient } from "./wda.ts";
@@ -46,7 +46,7 @@ export function createPhoneMcpServer(device: Device, opts: PhoneServerOptions = 
     const { name, arguments: args = {} } = req.params;
     if (!names.has(name)) return { isError: true, content: [{ type: "text", text: `unknown or disabled tool: ${name}` }] };
     try {
-      if (ACTIONS.has(name) && opts.approve && !(await opts.approve(name, args))) {
+      if (ACTIONS.has(name) && opts.approve && !(await opts.approve(name, approvalInput(device, name, args)))) {
         return { isError: true, content: [{ type: "text", text: "action denied by the operator" }] };
       }
       return { content: toMcp(await execute(device, name, args)) };

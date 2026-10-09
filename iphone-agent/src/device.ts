@@ -13,6 +13,8 @@ export interface Device {
   tap(x: number, y: number): Promise<void>;
   /** Tap an element by the ref the latest describeUi gave it; throws, without tapping, if the ref is stale. */
   tapRef(ref: string): Promise<void>;
+  /** What a ref points at per the latest describeUi (e.g. `Switch "Wi-Fi" at (345,145)`), or null if unknown or stale. */
+  describeRef(ref: string): string | null;
   swipe(fromX: number, fromY: number, toX: number, toY: number, duration?: number): Promise<void>;
   typeText(text: string): Promise<void>;
   pressButton(name: HardwareButton): Promise<void>;
@@ -78,12 +80,16 @@ export function flattenUi(root: unknown, max = MAX_ELEMENTS): string {
   return formatUi(uiElements(root, max));
 }
 
-/** Same type, label and frame. A changed value (a flipped switch) is still the same target. */
-function sameTarget(a: UiElement, b: UiElement): boolean {
-  const r = a.rect;
-  const s = b.rect;
-  return a.kind === b.kind && a.text === b.text && r.x === s.x && r.y === s.y && r.width === s.width && r.height === s.height;
+/**
+ * The screen's layout: every listed element's type, label and frame, in order, plus the total.
+ * Values are left out so a flipped switch is the same screen. Any added element (an alert, a sheet,
+ * a banner) or a different app changes it, which comparing one element at its index would miss.
+ */
+function layout({ elements, total }: UiListing): string {
+  return JSON.stringify([total, elements.map((e) => [e.kind, e.text, e.rect.x, e.rect.y, e.rect.width, e.rect.height])]);
 }
+
+const center = (r: Rect) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
 
 const REFRESH = "Call describe_ui again for fresh refs; do not tap its old coordinates.";
 
@@ -92,7 +98,7 @@ export class IPhone implements Device {
   private size: { width: number; height: number } | null = null;
   // Bumped before every device action: refs from an older epoch are stale whatever the screen shows now.
   private epoch = 0;
-  private refs: { epoch: number; byRef: Map<string, UiElement> } | null = null;
+  private refs: { epoch: number; byRef: Map<string, UiElement>; layout: string } | null = null;
 
   constructor(wda: WdaClient) {
     this.wda = wda;
@@ -118,7 +124,7 @@ export class IPhone implements Device {
     const epoch = this.epoch;
     const ui = uiElements(await this.wda.source("json"), MAX_ELEMENTS);
     // An action that ran while /source was in flight may have changed the screen under this listing.
-    if (epoch === this.epoch) this.refs = { epoch, byRef: new Map(ui.elements.map((e) => [e.ref, e])) };
+    if (epoch === this.epoch) this.refs = { epoch, byRef: new Map(ui.elements.map((e) => [e.ref, e])), layout: layout(ui) };
     return formatUi(ui);
   }
 
@@ -127,17 +133,33 @@ export class IPhone implements Device {
     if (!cached) throw new Error("no element refs yet: call describe_ui first, then tap by ref.");
     if (cached.epoch !== this.epoch) throw new Error(`ref ${ref} is stale: an action ran since the last describe_ui. ${REFRESH}`);
     const target = cached.byRef.get(ref);
-    if (!target) throw new Error(`unknown ref ${ref}: the last describe_ui listed e1..e${cached.byRef.size}. ${REFRESH}`);
-    // The screen can change without our tools (an alert, a notification, a slow transition), so check
-    // the element is still where describe_ui saw it before tapping there.
+    if (!target) {
+      const listed = cached.byRef.size ? `listed e1..e${cached.byRef.size}` : "listed no elements";
+      throw new Error(`unknown ref ${ref}: the last describe_ui ${listed}. ${REFRESH}`);
+    }
+    const c = center(target.rect);
+    const size = await this.points();
+    if (c.x < 0 || c.y < 0 || c.x >= size.width || c.y >= size.height) {
+      throw new Error(`ref ${ref} is off-screen at (${Math.round(c.x)},${Math.round(c.y)}): swipe it into view, then call describe_ui again.`);
+    }
+    // The screen can change without our tools (an alert, a notification, a slow transition), so the
+    // whole layout must still match what describe_ui saw before tapping there.
     const epoch = this.epoch;
-    const now = uiElements(await this.wda.source("json"), MAX_ELEMENTS).elements.find((e) => e.ref === ref);
-    if (epoch !== this.epoch || !now || !sameTarget(target, now)) {
-      this.refs = null;
+    const now = layout(uiElements(await this.wda.source("json"), MAX_ELEMENTS));
+    if (epoch !== this.epoch || now !== cached.layout) {
+      // Expire the listing but keep it, so a retry with another ref still reads "stale".
+      if (this.refs === cached) this.refs = { ...cached, epoch: -1 };
       throw new Error(`ref ${ref} is stale: the screen changed since the last describe_ui. ${REFRESH}`);
     }
-    const { x, y, width, height } = now.rect;
-    await this.tap(x + width / 2, y + height / 2);
+    await this.tap(c.x, c.y);
+  }
+
+  describeRef(ref: string): string | null {
+    const cached = this.refs;
+    const target = cached && cached.epoch === this.epoch ? cached.byRef.get(ref) : undefined;
+    if (!target) return null;
+    const c = center(target.rect);
+    return `${target.kind} "${target.text}" at (${Math.round(c.x)},${Math.round(c.y)})`;
   }
 
   tap(x: number, y: number) {
