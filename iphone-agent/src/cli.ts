@@ -48,8 +48,8 @@ if (maxSteps !== undefined && (!Number.isInteger(maxSteps) || maxSteps < 1)) {
 }
 
 const keepToolUses = values["keep-tool-uses"] === undefined ? undefined : Number(values["keep-tool-uses"]);
-if (keepToolUses !== undefined && (!Number.isInteger(keepToolUses) || keepToolUses < 0)) {
-  console.error("--keep-tool-uses must be a non-negative integer");
+if (keepToolUses !== undefined && (!Number.isInteger(keepToolUses) || keepToolUses < 1)) {
+  console.error("--keep-tool-uses must be a positive integer");
   process.exit(2);
 }
 

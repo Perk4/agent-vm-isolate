@@ -114,16 +114,16 @@ Every action returns a point-resolution screenshot, about 440 image tokens on a 
 context_management: {
   edits: [{
     type: "clear_tool_uses_20250919",
-    trigger: { type: "input_tokens", value: 20_000 },
-    keep: { type: "tool_uses", value: 5 },          // RunOptions.keepToolUses / --keep-tool-uses
+    trigger: { type: "input_tokens", value: 20_000 }, // max(20k, 10k + 1k per kept result)
+    keep: { type: "tool_uses", value: 5 },          // RunOptions.keepToolUses / --keep-tool-uses (>= 1)
     clear_at_least: { type: "input_tokens", value: 5_000 },
   }],
 }
 ```
 
-- Once the prompt passes 20k input tokens, the API replaces all but the newest 5 tool results (screenshots and `describe_ui` text) with a placeholder. The tool calls themselves stay visible.
-- Each clear rewrites the prompt cache, so a clear only happens when it removes at least 5k tokens. Clears come in batches rather than one screenshot per turn.
-- The harness never rewrites earlier turns. The request it sends is append-only, which preserved thinking on `claude-opus-5-5` requires. Clearing happens server-side and does not count as an edit. So the client payload still grows with every step; what the model sees is bounded.
+- Once the prompt passes the trigger (20k input tokens at the default keep of 5; it grows by 1k per kept result above 10), the API replaces all but the newest kept tool results (screenshots and `describe_ui` text) with a placeholder. The tool calls themselves stay visible. Keep is at least 1, so the model always sees the result of its latest action.
+- A clear only happens when it removes at least 5k tokens, so clears come in batches rather than one screenshot per turn. (If you add prompt caching later, this also limits how often a clear invalidates the cache.)
+- The harness never rewrites earlier turns. The request it sends is append-only, which preserved thinking on `claude-opus-5-5` requires. Clearing happens server-side and does not count as an edit. So the client payload still grows with every step; what is bounded is how many old tool results the model sees. Thinking blocks and tool-call inputs are not cleared, so very long runs still grow slowly.
 - The beta is sent with or without `--no-fallbacks`. With fallbacks on, `betas` is `["context-management-2025-06-27", "server-side-fallback-2026-07-01"]`.
 
 ## Safety

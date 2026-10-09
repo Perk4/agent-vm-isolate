@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import { runAgent, TOOLS, type CreateMessage } from "./agent.ts";
+import { clearOldToolResults, runAgent, TOOLS, type CreateMessage } from "./agent.ts";
 import { flattenUi, IPhone } from "./device.ts";
 import { startMockWda, type MockWda } from "./mock-wda.ts";
 import { decodePng, encodePng, resize } from "./png.ts";
@@ -143,12 +143,7 @@ test("agent loop: tap field, type, save a note; errors go back as is_error", asy
   assert.equal(errResult.is_error, true);
 });
 
-const clearEdit = (keep: number) => ({
-  type: "clear_tool_uses_20250919",
-  trigger: { type: "input_tokens", value: 20_000 },
-  keep: { type: "tool_uses", value: keep },
-  clear_at_least: { type: "input_tokens", value: 5_000 },
-});
+const clearEdit = clearOldToolResults;
 
 test("30-step run: every request asks the API to clear old tool results; history stays append-only", async () => {
   reset();
@@ -188,6 +183,26 @@ test("context editing without fallbacks keeps its beta; keepToolUses sets the ke
     assert.deepEqual(req.betas, ["context-management-2025-06-27"]);
     assert.equal(req.fallbacks, undefined);
     assert.deepEqual(req.context_management, { edits: [clearEdit(2)] });
+  }
+});
+
+test("context editing: the default edit's numbers, a trigger that grows with keep, and bad keep values", async () => {
+  assert.deepEqual(clearOldToolResults(5), {
+    type: "clear_tool_uses_20250919",
+    trigger: { type: "input_tokens", value: 20_000 },
+    keep: { type: "tool_uses", value: 5 },
+    clear_at_least: { type: "input_tokens", value: 5_000 },
+  });
+  // 40 kept screenshots alone are ~17.6k tokens; a fixed 20k trigger would rarely leave 5k clearable.
+  assert.equal(clearOldToolResults(40).trigger?.value, 50_000);
+
+  for (const bad of [0, -1, 2.5, Number.NaN]) {
+    const model = scripted(["done"]);
+    await assert.rejects(
+      runAgent({ task: "x", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create, keepToolUses: bad }),
+      RangeError,
+    );
+    assert.equal(model.seen.length, 0, `keepToolUses ${bad} must fail before any API call`);
   }
 });
 
