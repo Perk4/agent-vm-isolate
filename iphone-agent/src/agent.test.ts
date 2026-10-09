@@ -529,3 +529,34 @@ test("hidden elements get no ref, and an element turning hidden makes refs stale
   await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
   assert.deepEqual(taps, []);
 });
+
+test("a look-alike control with a different identifier makes refs stale", async () => {
+  const ok = (id: string) => ({ ...button("Delete", 10, 10), name: "Delete", rawIdentifier: id });
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [ok("delete-draft-1")] } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  await phone.describeUi();
+  state.tree = { type: "XCUIElementTypeApplication", children: [ok("delete-account")] };
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("an app switch while /source is read gives no refs, and fails a pending tap", async () => {
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [button("OK", 10, 10)] } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  let switching = true;
+  let reads = 0;
+  // While `switching`, the foreground app changes between the bundle reads that bracket /source.
+  const bundle = async () => (switching && reads++ % 2 === 1 ? "com.b" : "com.a");
+  const phone = new IPhone(Object.assign(Object.create(wda) as WdaClient, { activeBundleId: bundle }));
+  assert.match(await phone.describeUi(), /e1 Button "OK"/);
+  await assert.rejects(phone.tapRef("e1"), /no element refs yet/);
+
+  // A consistent listing, then a switch during tapRef's own snapshot: refused.
+  switching = false;
+  await phone.describeUi();
+  switching = true;
+  reads = 0;
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});

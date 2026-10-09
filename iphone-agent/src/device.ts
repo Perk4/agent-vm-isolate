@@ -30,6 +30,7 @@ type UiNode = {
   type?: string;
   label?: string | null;
   name?: string | null;
+  rawIdentifier?: string | null;
   value?: string | null;
   rect?: Rect;
   isEnabled?: boolean | string;
@@ -38,7 +39,17 @@ type UiNode = {
 };
 
 /** One listed element. Its ref is `e<n>`, its position in the listing. */
-type UiElement = { ref: string; kind: string; text: string; value: string | null; enabled: boolean; rect: Rect; line: string };
+type UiElement = {
+  ref: string;
+  kind: string;
+  text: string;
+  /** Accessibility name and identifier: two look-alike controls (same label, frame) can differ here. */
+  id: [string | null, string | null];
+  value: string | null;
+  enabled: boolean;
+  rect: Rect;
+  line: string;
+};
 
 type UiListing = { elements: UiElement[]; total: number };
 
@@ -68,7 +79,8 @@ function uiElements(root: unknown, max: number): UiListing {
         if (n.value !== null && n.value !== undefined && n.value !== "") line += ` value=${JSON.stringify(n.value)}`;
         if (n.isEnabled === false || n.isEnabled === "0") line += " disabled";
         const enabled = !(n.isEnabled === false || n.isEnabled === "0");
-        elements.push({ ref, kind, text, value: n.value ?? null, enabled, rect: { x, y, width, height }, line });
+        const id: [string | null, string | null] = [n.name ?? null, n.rawIdentifier ?? null];
+        elements.push({ ref, kind, text, id, value: n.value ?? null, enabled, rect: { x, y, width, height }, line });
       }
     }
     n.children?.forEach(walk);
@@ -97,9 +109,9 @@ export function flattenUi(root: unknown, max = MAX_ELEMENTS): string {
  * actions expire refs through the epoch anyway.
  */
 function layout(root: unknown, bundleId: string | null, { elements, total }: UiListing): string {
-  const r = (root ?? {}) as UiNode & { rawIdentifier?: unknown };
+  const r = (root ?? {}) as UiNode;
   const app = [bundleId, r.type ?? null, r.label ?? null, r.name ?? null, r.rawIdentifier ?? null];
-  const els = elements.map((e) => [e.kind, e.text, e.value, e.enabled, e.rect.x, e.rect.y, e.rect.width, e.rect.height]);
+  const els = elements.map((e) => [e.kind, e.text, ...e.id, e.value, e.enabled, e.rect.x, e.rect.y, e.rect.width, e.rect.height]);
   return JSON.stringify([app, total, els]);
 }
 
@@ -138,10 +150,12 @@ export class IPhone implements Device {
 
   async describeUi(): Promise<string> {
     const epoch = this.epoch;
-    const [source, bundleId] = await Promise.all([this.wda.source("json"), this.wda.activeBundleId()]);
+    const snap = await this.snapshot();
+    const { source, bundleId } = snap;
     const ui = uiElements(source, MAX_ELEMENTS);
-    // An action that ran while /source was in flight may have changed the screen under this listing.
-    if (epoch === this.epoch) {
+    // An action that ran while /source was in flight may have changed the screen under this listing,
+    // and an app switch mid-read leaves no consistent snapshot: list it, but hand out no refs.
+    if (epoch === this.epoch && snap.consistent) {
       this.refs = {
         epoch,
         listing: ++this.listings,
@@ -176,8 +190,9 @@ export class IPhone implements Device {
     // The screen can change without our tools (an alert, a notification, a slow transition), so the
     // whole layout must still match what describe_ui saw before tapping there.
     // Every qualifying element, not just the 150 listed, so a change past the cap still counts.
-    const [source, bundleId] = await Promise.all([this.wda.source("json"), this.wda.activeBundleId()]);
-    const now = layout(source, bundleId, uiElements(source, Infinity));
+    const snap = await this.snapshot();
+    // An inconsistent snapshot (the app switched mid-read) can't vouch for the ref: treat it as changed.
+    const now = snap.consistent ? layout(snap.source, snap.bundleId, uiElements(snap.source, Infinity)) : null;
     // Compare with the epoch checked on entry, not one read after the awaits above: an action that
     // ran during either await (a concurrent MCP call) must expire this ref.
     if (this.epoch !== cached.epoch || now !== cached.layout) {
@@ -188,7 +203,19 @@ export class IPhone implements Device {
     await this.tap(c.x, c.y);
   }
 
-  refListing(): number | null {
+  /**
+   * /source bracketed by the foreground bundle id, read before and after. If the app switched while
+   * /source was in flight, the tree and the id may describe different apps, so the snapshot is
+   * marked inconsistent rather than fingerprinted.
+   */
+  private async snapshot(): Promise<{ source: unknown; bundleId: string | null; consistent: boolean }> {
+    const before = await this.wda.activeBundleId();
+    const source = await this.wda.source("json");
+    const after = await this.wda.activeBundleId();
+    return { source, bundleId: after, consistent: before === after };
+  }
+
+    refListing(): number | null {
     const cached = this.refs;
     return cached && cached.epoch === this.epoch ? cached.listing : null;
   }
