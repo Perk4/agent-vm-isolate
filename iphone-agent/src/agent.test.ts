@@ -290,12 +290,12 @@ test("describe_ui prefixes each element with a ref", async () => {
 
 test("agent loop: tap by ref turns Wi-Fi off", async () => {
   reset();
-  // Home: e1 Settings. Settings: e1 Back, e2 title, e3 Wi-Fi cell, e4 Wi-Fi switch.
+  // Home: e1 Settings, e2 Notes. Settings, numbered on: e3 Back, e4 title, e5 Wi-Fi cell, e6 Wi-Fi switch.
   const model = scripted([
     [{ name: "describe_ui", input: {} }],
     [{ name: "tap", input: { ref: "e1" } }],
     [{ name: "describe_ui", input: {} }],
-    [{ name: "tap", input: { ref: "e4" } }],
+    [{ name: "tap", input: { ref: "e6" } }],
     "Wi-Fi is now off.",
   ]);
   const result = await runAgent({ task: "Turn off Wi-Fi", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create });
@@ -340,8 +340,8 @@ test("any action expires refs, even one that leaves the screen as it was", async
   await execute(phone, "press_button", { button: "home" }); // already home: same screen, same elements
   await assert.rejects(execute(phone, "tap", { ref: "e1" }), /e1 is stale: an action ran/);
   assert.equal(mock.state.app, "home");
-  await phone.describeUi();
-  await execute(phone, "tap", { ref: "e1" });
+  assert.match(await phone.describeUi(), /^e3 Icon "Settings"/m); // same screen, new numbers
+  await execute(phone, "tap", { ref: "e3" });
   assert.equal(mock.state.app, "com.apple.Preferences");
 });
 
@@ -470,11 +470,11 @@ test("a describe_ui during a pending approval can't redirect the approved tap", 
   await phone.describeUi(); // home: e1 = the Settings icon
   const shown = approvalInput(phone, "tap", { ref: "e1" });
   assert.equal(shown.target, 'Icon "Settings" at (62,112)');
-  // While the human is deciding, the screen changes out of band and another describe_ui
-  // rebinds e1 to Settings' Back button. The layout check alone would accept this tap.
+  // While the human is deciding, the screen changes out of band and another describe_ui lists
+  // Settings, Back button first. The layout check alone would accept this tap.
   mock.state.app = "com.apple.Preferences";
-  assert.match(await phone.describeUi(), /^e1 Button "Back"/);
-  await assert.rejects(execute(phone, "tap", shown), /e1 was re-listed since it was approved/);
+  assert.match(await phone.describeUi(), /^e3 Button "Back"/);
+  await assert.rejects(execute(phone, "tap", shown), /unknown ref e1.*never reused/);
   assert.equal(mock.state.app, "com.apple.Preferences", "Back was not tapped");
 });
 
@@ -486,11 +486,11 @@ test("an identical-looking element in a new listing is not the approved one", as
   const shown = approvalInput(phone, "tap", { ref: "e1" });
   assert.equal(shown.target, 'Button "Back" at (43,72)');
   // Out of band, Notes comes to the front. Its Back button has the same label and frame, so a
-  // fresh describe_ui gives e1 the same description. It is still not what was approved.
+  // fresh describe_ui gives it the same description. It is still not what was approved.
   mock.state.app = "com.apple.mobilenotes";
-  await phone.describeUi();
-  assert.equal(approvalInput(phone, "tap", { ref: "e1" }).target, shown.target);
-  await assert.rejects(execute(phone, "tap", shown), /e1 was re-listed since it was approved/);
+  assert.match(await phone.describeUi(), /^e6 Button "Back"/);
+  assert.equal(approvalInput(phone, "tap", { ref: "e6" }).target, shown.target);
+  await assert.rejects(execute(phone, "tap", shown), /unknown ref e1.*never reused/);
   assert.equal(mock.state.app, "com.apple.mobilenotes", "Back was not tapped");
 });
 
@@ -554,10 +554,10 @@ test("an app switch while /source is read gives no refs, and fails a pending tap
 
   // A consistent listing, then a switch during tapRef's own snapshot: refused.
   switching = false;
-  await phone.describeUi();
+  assert.match(await phone.describeUi(), /e2 Button "OK"/);
   switching = true;
   reads = 0;
-  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  await assert.rejects(phone.tapRef("e2"), /e2 is stale: the screen changed/);
   assert.deepEqual(taps, []);
 });
 
@@ -588,4 +588,16 @@ test("an inconsistent describe_ui expires the previous listing's refs", async ()
   assert.equal(phone.describeRef("e1"), null);
   await assert.rejects(phone.tapRef("e1"), /e1 is stale/);
   assert.deepEqual(taps, []);
+});
+
+test("a ref from one client's listing can't tap an element of another client's newer listing", async () => {
+  reset();
+  // Two MCP-over-HTTP clients share one device, so they share its refs.
+  const phone = new IPhone(new WdaClient(mock.url));
+  assert.match(await phone.describeUi(), /^e1 Icon "Settings"/m); // client A
+  await execute(phone, "tap", { x: 62, y: 112 }); // client B opens Settings...
+  assert.match(await phone.describeUi(), /^e3 Button "Back"/m); // ...and lists it
+  // A taps the e1 it was shown. Per-listing numbering would have made that Settings' Back button.
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /unknown ref e1: the last describe_ui listed e3\.\.e7/);
+  assert.equal(mock.state.app, "com.apple.Preferences", "Back was not tapped");
 });

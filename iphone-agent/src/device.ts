@@ -58,8 +58,8 @@ const SKIP = new Set(["Other", "Window", "Application", "ScrollView", "Table", "
 
 const MAX_ELEMENTS = 150;
 
-/** Keep the meaningful elements of a WDA JSON source tree, in document order, at most `max`. */
-function uiElements(root: unknown, max: number): UiListing {
+/** Keep the meaningful elements of a WDA JSON source tree, in document order, at most `max`; refs start at e<first>. */
+function uiElements(root: unknown, max: number, first = 1): UiListing {
   const elements: UiElement[] = [];
   let total = 0;
   const walk = (n: UiNode) => {
@@ -72,7 +72,7 @@ function uiElements(root: unknown, max: number): UiListing {
       total++;
       if (elements.length < max) {
         const { x, y, width, height } = n.rect;
-        const ref = `e${elements.length + 1}`;
+        const ref = `e${first + elements.length}`;
         const cx = Math.round(x + width / 2);
         const cy = Math.round(y + height / 2);
         let line = `${ref} ${kind} "${text}" center=(${cx},${cy}) size=${Math.round(width)}x${Math.round(height)}`;
@@ -137,6 +137,10 @@ export class IPhone implements Device {
   private refs: { epoch: number; listing: number; byRef: Map<string, UiElement>; layout: string } | null = null;
   // Each describe_ui listing gets a new id, so an approval can name the exact listing it saw.
   private listings = 0;
+  // Ref numbers are never reused: each listing continues where the last stopped (e1..e12, then e13..).
+  // Clients sharing this device (MCP over HTTP) each hold their own listing, and a ref from one can't
+  // name an element of another's newer listing; it reads as unknown instead.
+  private nextRef = 1;
 
   constructor(wda: WdaClient) {
     this.wda = wda;
@@ -162,7 +166,8 @@ export class IPhone implements Device {
     const epoch = this.epoch;
     const snap = await this.snapshot();
     const { source, bundleId } = snap;
-    const ui = uiElements(source, MAX_ELEMENTS);
+    const ui = uiElements(source, MAX_ELEMENTS, this.nextRef);
+    this.nextRef += ui.elements.length;
     // An action that ran while /source was in flight may have changed the screen under this listing,
     // and an app switch mid-read leaves no consistent snapshot: list it, but hand out no refs.
     if (epoch === this.epoch && snap.consistent) {
@@ -185,8 +190,9 @@ export class IPhone implements Device {
     if (cached.epoch !== this.epoch) throw new Error(`ref ${ref} is stale: an action ran since the last describe_ui. ${REFRESH}`);
     const target = cached.byRef.get(ref);
     if (!target) {
-      const listed = cached.byRef.size ? `listed e1..e${cached.byRef.size}` : "listed no elements";
-      throw new Error(`unknown ref ${ref}: the last describe_ui ${listed}. ${REFRESH}`);
+      const refs = [...cached.byRef.keys()];
+      const listed = refs.length ? `listed ${refs[0]}..${refs.at(-1)}` : "listed no elements";
+      throw new Error(`unknown ref ${ref}: the last describe_ui ${listed}, and refs from older listings are never reused. ${REFRESH}`);
     }
     // A describe_ui that ran while approval was pending can rebind the ref to another element, even
     // one that looks identical (a Back button in the same spot). Tap only from the listing approved.

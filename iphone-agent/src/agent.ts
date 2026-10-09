@@ -28,7 +28,8 @@ export const TOOLS: Tool[] = [
   {
     name: "describe_ui",
     description:
-      "List on-screen accessibility elements, one per line: ref (e1, e2, ...), type, label, center=(x,y) in points, size, value. " +
+      "List on-screen accessibility elements, one per line: ref (e.g. e12), type, label, center=(x,y) in points, size, value. " +
+      "Each listing numbers its refs anew (never reusing a number), so use the refs from the latest listing. " +
       "Tap an element by its ref rather than estimating coordinates from the screenshot. " +
       "Refs expire after any action; call describe_ui again before tapping by ref.",
     input_schema: obj({}, []),

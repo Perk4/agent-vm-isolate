@@ -64,13 +64,13 @@ test("an MCP client can flip Wi-Fi by ref, and a ref is stale after launch_app",
   await client.callTool({ name: "tap", arguments: { ref: "e1" } });
   assert.equal(mock.state.app, "com.apple.Preferences");
   const settings = (await client.callTool({ name: "describe_ui", arguments: {} })).content as Block[];
-  assert.match(settings[0]!.text!, /^e4 Switch "Wi-Fi"/m);
-  const res = await client.callTool({ name: "tap", arguments: { ref: "e4" } });
+  assert.match(settings[0]!.text!, /^e6 Switch "Wi-Fi"/m);
+  const res = await client.callTool({ name: "tap", arguments: { ref: "e6" } });
   assert.notEqual(res.isError, true);
   assert.equal(mock.state.wifi, false);
 
   await client.callTool({ name: "launch_app", arguments: { bundle_id: "com.apple.mobilenotes" } });
-  const stale = await client.callTool({ name: "tap", arguments: { ref: "e4" } });
+  const stale = await client.callTool({ name: "tap", arguments: { ref: "e6" } });
   assert.equal(stale.isError, true);
   assert.match((stale.content as Block[])[0]!.text!, /stale.*describe_ui/);
   assert.equal(mock.state.app, "com.apple.mobilenotes");
