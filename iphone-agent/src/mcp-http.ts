@@ -2,8 +2,10 @@
 // (a cloud Claude Code session, a connector) can drive the phone. This server
 // controls a physical device, so every default fails closed:
 // - binds 127.0.0.1 unless a host is given;
-// - a non-loopback bind refuses to start without a bearer token, and is
-//   read-only unless allowActions is set;
+// - "exposed" means a non-loopback bind OR a non-loopback --allowed-host (a
+//   proxy such as `tailscale serve` in front of a loopback bind). An exposed
+//   server refuses to start without a bearer token, and is read-only unless
+//   allowActions is set;
 // - Host and Origin are checked on every request against DNS rebinding.
 // The SDK's allowedHosts/allowedOrigins transport options are deprecated in
 // favour of middleware, and its middleware is Express-only, so the checks live here.
@@ -18,31 +20,58 @@ import { createPhoneMcpServer } from "./mcp.ts";
 
 export type PhoneHttpOptions = {
   port: number;
-  /** Bind address. Default 127.0.0.1. Anything that isn't loopback needs `token`. */
+  /** Bind address. Default 127.0.0.1. Anything that isn't loopback makes the server exposed. */
   host?: string;
   /** Required `Authorization: Bearer` value. Enforced on every bind when set. */
   token?: string;
-  /** Allow action tools on a non-loopback bind (read-only otherwise). */
+  /** Allow action tools on an exposed server (read-only otherwise). */
   allowActions?: boolean;
   readOnly?: boolean;
-  /** Extra Host/Origin hostnames to accept, e.g. a Tailscale MagicDNS name. */
+  /** Extra Host/Origin hostnames to accept, e.g. a Tailscale MagicDNS name. A non-loopback one makes the server exposed. */
   allowedHosts?: string[];
 };
 
+const HTTP_ONLY_FLAGS = ["--host", "--allow-actions", "--allowed-host"];
+const isFlag = (arg: string, flag: string) => arg === flag || arg.startsWith(`${flag}=`);
+
 /**
- * CLI flags for HTTP mode: `--http [port] [--host <addr>] [--allow-actions] [--allowed-host <name>]...`.
- * Throws on unknown or malformed flags rather than guessing, since a typo could widen exposure.
+ * True when argv asks for HTTP mode (`--http` or `--http=<port>`). Throws when an
+ * HTTP-only flag appears without it, rather than silently serving stdio.
+ */
+export function wantsHttp(argv: string[]): boolean {
+  if (argv.some((a) => isFlag(a, "--http"))) return true;
+  const stray = argv.find((a) => HTTP_ONLY_FLAGS.some((f) => isFlag(a, f)));
+  if (stray !== undefined) throw new Error(`${stray.split("=")[0]} only applies to HTTP mode; add --http`);
+  return false;
+}
+
+function parsePort(raw: string): number {
+  const port = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!(port >= 0 && port <= 65535)) throw new Error(`invalid port: ${raw}`);
+  return port;
+}
+
+/**
+ * CLI flags for HTTP mode: `--http [port]` or `--http=<port>`, `--host <addr>`, `--allow-actions`,
+ * `--allowed-host <name>` (repeatable). Throws on unknown or malformed flags rather than guessing,
+ * since a typo could widen exposure.
  */
 export function parseHttpArgs(argv: string[], token: string | undefined): PhoneHttpOptions {
-  const args = [...argv];
-  const at = args.indexOf("--http");
-  const next = args[at + 1];
+  const args: string[] = [];
   let port = 8765;
-  if (next !== undefined && /^\d+$/.test(next)) {
-    port = Number(next);
-    args.splice(at + 1, 1);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] ?? "";
+    if (a.startsWith("--http=")) {
+      port = parsePort(a.slice("--http=".length));
+      args.push("--http");
+    } else if (a === "--http" && /^\d+$/.test(argv[i + 1] ?? "")) {
+      i++;
+      port = parsePort(argv[i] ?? "");
+      args.push("--http");
+    } else {
+      args.push(a);
+    }
   }
-  if (port > 65535) throw new Error(`invalid port: ${port}`);
   const { values } = parseArgs({
     args,
     strict: true,
@@ -67,21 +96,35 @@ export function parseHttpArgs(argv: string[], token: string | undefined): PhoneH
 export type PhoneHttpServer = { url: string; readOnly: boolean; close: () => Promise<void> };
 
 const MIN_TOKEN_LENGTH = 32;
-const WILDCARDS = new Set(["0.0.0.0", "::", "[::]"]);
-const LOOPBACK_HOSTNAMES = ["localhost", "127.0.0.1", "[::1]"];
+const WILDCARDS = new Set(["0.0.0.0", "[::]"]);
 
-function isLoopback(host: string): boolean {
-  return host === "localhost" || host === "::1" || host === "[::1]" || (isIPv4(host) && host.startsWith("127."));
+/** Takes a hostname in `new URL(...).hostname` form (IPv6 in brackets). */
+function isLoopback(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "[::1]" || (isIPv4(hostname) && hostname.startsWith("127."));
 }
 
-/** The form `new URL(...).hostname` gives: IPv6 literals in brackets. */
-function asHostname(host: string): string {
-  return isIPv6(host) ? `[${host}]` : host.toLowerCase();
+const dropTrailingDot = (hostname: string) => (hostname.endsWith(".") ? hostname.slice(0, -1) : hostname);
+
+/**
+ * A configured host (bind address or --allowed-host) in the form a request's Host header
+ * parses to: lowercased and canonicalized by WHATWG URL, IPv6 in brackets, no trailing dot.
+ * Undefined for anything that isn't a bare host: scheme, port, path, credentials, whitespace.
+ */
+function canonicalHost(raw: string): string | undefined {
+  const bare = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
+  const v6 = isIPv6(bare);
+  if (bare === "" || /[\s/?#@\\]/.test(bare) || (!v6 && bare.includes(":"))) return undefined;
+  try {
+    const hostname = dropTrailingDot(new URL(`http://${v6 ? `[${bare}]` : bare}`).hostname);
+    return hostname === "" ? undefined : hostname;
+  } catch {
+    return undefined;
+  }
 }
 
 function hostnameOf(url: string): string | undefined {
   try {
-    return new URL(url).hostname;
+    return dropTrailingDot(new URL(url).hostname);
   } catch {
     return undefined;
   }
@@ -96,51 +139,56 @@ function bearerMatches(header: string | undefined, expected: Buffer): boolean {
 }
 
 function rejectReason(req: IncomingMessage, allowed: ReadonlySet<string>): string | undefined {
+  const ok = (hostname: string | undefined) => hostname !== undefined && (isLoopback(hostname) || allowed.has(hostname));
   const host = req.headers.host;
   if (!host) return "missing Host header";
-  const hostname = hostnameOf(`http://${host}`);
-  if (hostname === undefined || !allowed.has(hostname)) return `Host not allowed: ${host} (see --allowed-host)`;
+  if (!ok(hostnameOf(`http://${host}`))) return `Host not allowed: ${host} (see --allowed-host)`;
   // Non-browser clients send no Origin. A browser page on another site would, which is the rebinding case.
   const origin = req.headers.origin;
-  if (origin !== undefined) {
-    const o = hostnameOf(origin);
-    if (o === undefined || !allowed.has(o)) return `Origin not allowed: ${origin}`;
-  }
+  if (origin !== undefined && !ok(hostnameOf(origin))) return `Origin not allowed: ${origin}`;
   return undefined;
 }
 
-function reply(res: ServerResponse, status: number, message: string, headers: Record<string, string> = {}): void {
+function reply(res: ServerResponse, status: number, code: number, message: string, headers: Record<string, string> = {}): void {
   res.writeHead(status, { "content-type": "application/json", ...headers });
-  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message }, id: null }));
+  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
 }
 
 export async function startPhoneHttpServer(device: Device, opts: PhoneHttpOptions): Promise<PhoneHttpServer> {
-  const host = opts.host ?? "127.0.0.1";
-  const local = isLoopback(host);
+  const host = canonicalHost(opts.host ?? "127.0.0.1");
+  if (host === undefined) throw new Error(`invalid --host "${opts.host}": give a bare hostname or IP address`);
+  const allowed = new Set<string>();
+  for (const raw of opts.allowedHosts ?? []) {
+    const h = canonicalHost(raw);
+    if (h === undefined) {
+      throw new Error(`invalid --allowed-host "${raw}": give a bare hostname or IP address, with no scheme, port, path or whitespace`);
+    }
+    allowed.add(h);
+  }
   if (opts.token !== undefined && (opts.token.length < MIN_TOKEN_LENGTH || /\s/.test(opts.token))) {
     throw new Error(`IPHONE_MCP_TOKEN must be at least ${MIN_TOKEN_LENGTH} characters, no whitespace (try: openssl rand -hex 32)`);
   }
-  if (!local && opts.token === undefined) {
-    throw new Error(`refusing to bind ${host} without a bearer token: set IPHONE_MCP_TOKEN (try: openssl rand -hex 32)`);
+  const publicName = [...allowed].find((h) => !isLoopback(h));
+  const exposed = !isLoopback(host) || publicName !== undefined;
+  if (exposed && opts.token === undefined) {
+    const why = isLoopback(host) ? `accept Host ${publicName}` : `bind ${host}`;
+    throw new Error(`refusing to ${why} without a bearer token: set IPHONE_MCP_TOKEN (try: openssl rand -hex 32)`);
   }
-  const readOnly = opts.readOnly === true || (!local && opts.allowActions !== true);
+  const readOnly = opts.readOnly === true || (exposed && opts.allowActions !== true);
   const expected = opts.token === undefined ? undefined : sha256(opts.token);
-  const allowed = new Set([
-    ...LOOPBACK_HOSTNAMES,
-    ...(WILDCARDS.has(host) ? [] : [asHostname(host)]),
-    ...(opts.allowedHosts ?? []).map(asHostname),
-  ]);
+  if (!WILDCARDS.has(host)) allowed.add(host);
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
-    if (req.url?.split("?")[0] !== "/mcp") return reply(res, 404, "not found; the endpoint is /mcp");
+    if (req.url?.split("?")[0] !== "/mcp") return reply(res, 404, -32000, "not found; the endpoint is /mcp");
     const rejected = rejectReason(req, allowed);
-    if (rejected) return reply(res, 403, rejected);
+    if (rejected) return reply(res, 403, -32000, rejected);
     if (expected && !bearerMatches(req.headers.authorization, expected)) {
-      return reply(res, 401, "missing or invalid bearer token", { "www-authenticate": 'Bearer realm="iphone-agent"' });
+      return reply(res, 401, -32000, "missing or invalid bearer token", { "www-authenticate": 'Bearer realm="iphone-agent"' });
     }
     // Stateless: no sessions, so no server-initiated stream on GET and nothing to DELETE.
-    if (req.method !== "POST") return reply(res, 405, "method not allowed", { allow: "POST" });
-    // A Server binds one transport, so stateless mode builds both per request. The device is shared.
+    if (req.method !== "POST") return reply(res, 405, -32000, "method not allowed", { allow: "POST" });
+    // A Server binds one transport, so stateless mode builds both per request. The device is shared,
+    // and createPhoneMcpServer serializes tool calls per device across these per-request servers.
     const server = createPhoneMcpServer(device, { readOnly });
     const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
     res.on("close", () => void server.close());
@@ -151,17 +199,21 @@ export async function startPhoneHttpServer(device: Device, opts: PhoneHttpOption
 
   const http = createServer((req, res) => {
     handle(req, res).catch((err: unknown) => {
-      if (!res.headersSent) reply(res, 500, err instanceof Error ? err.message : String(err));
+      // Details stay in the operator's log; the client may be remote.
+      console.error("iphone-agent MCP: request failed:", err);
+      if (!res.headersSent) reply(res, 500, -32603, "internal error");
       else res.end();
     });
   });
+  // listen() wants a bare IPv6 address, not the bracketed URL form.
+  const listenHost = host.startsWith("[") ? host.slice(1, -1) : host;
   await new Promise<void>((resolve, reject) => {
     http.once("error", reject);
-    http.listen(opts.port, host, () => resolve());
+    http.listen(opts.port, listenHost, () => resolve());
   });
   // SAFETY: listen() on a TCP host/port always reports an AddressInfo, never a pipe path string.
   const { port } = http.address() as AddressInfo;
-  const shown = WILDCARDS.has(host) ? "127.0.0.1" : asHostname(host);
+  const shown = host === "0.0.0.0" ? "127.0.0.1" : host === "[::]" ? "[::1]" : host;
   return {
     url: `http://${shown}:${port}/mcp`,
     readOnly,
