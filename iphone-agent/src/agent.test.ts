@@ -396,8 +396,10 @@ test("the approve gate sees what a ref resolves to, not just its name", async ()
     createMessage: model.create,
     approve: (_tool, input) => (seen.push(input), true),
   });
-  assert.deepEqual(seen.at(-1), { ref: "e4", target: 'Switch "Wi-Fi" at (346,146)' });
-  assert.deepEqual(result.steps.at(-1)!.input, { ref: "e4", target: 'Switch "Wi-Fi" at (346,146)' });
+  const approved = seen.at(-1)!;
+  assert.equal(approved.target, 'Switch "Wi-Fi" at (346,146)');
+  assert.equal(typeof approved.listing, "number");
+  assert.deepEqual(result.steps.at(-1)!.input, approved);
   assert.equal(mock.state.wifi, false);
 });
 
@@ -471,6 +473,33 @@ test("a describe_ui during a pending approval can't redirect the approved tap", 
   // rebinds e1 to Settings' Back button. The layout check alone would accept this tap.
   mock.state.app = "com.apple.Preferences";
   assert.match(await phone.describeUi(), /^e1 Button "Back"/);
-  await assert.rejects(execute(phone, "tap", shown), /e1 no longer points at the approved element \(Icon "Settings" at \(62,112\)\)/);
+  await assert.rejects(execute(phone, "tap", shown), /e1 was re-listed since it was approved/);
   assert.equal(mock.state.app, "com.apple.Preferences", "Back was not tapped");
+});
+
+test("an identical-looking element in a new listing is not the approved one", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.launchApp("com.apple.Preferences");
+  await phone.describeUi();
+  const shown = approvalInput(phone, "tap", { ref: "e1" });
+  assert.equal(shown.target, 'Button "Back" at (43,72)');
+  // Out of band, Notes comes to the front. Its Back button has the same label and frame, so a
+  // fresh describe_ui gives e1 the same description. It is still not what was approved.
+  mock.state.app = "com.apple.mobilenotes";
+  await phone.describeUi();
+  assert.equal(approvalInput(phone, "tap", { ref: "e1" }).target, shown.target);
+  await assert.rejects(execute(phone, "tap", shown), /e1 was re-listed since it was approved/);
+  assert.equal(mock.state.app, "com.apple.mobilenotes", "Back was not tapped");
+});
+
+test("a different foreground app with matching controls makes refs stale", async () => {
+  const children = [button("OK", 10, 10)];
+  const state = { tree: { type: "XCUIElementTypeApplication", label: "App A", children } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  await phone.describeUi();
+  state.tree = { type: "XCUIElementTypeApplication", label: "App B", children };
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
 });

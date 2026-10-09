@@ -12,8 +12,10 @@ export interface Device {
   describeUi(): Promise<string>;
   tap(x: number, y: number): Promise<void>;
   /** Tap an element by the ref the latest describeUi gave it; throws, without tapping, if the ref is stale. */
-  /** `expect` is the describeRef() text an approver saw; if the ref now resolves differently, refuse. */
-  tapRef(ref: string, expect?: string): Promise<void>;
+  /** `listing` is the refListing() an approver saw; if the refs have been re-listed since, refuse. */
+  tapRef(ref: string, listing?: number): Promise<void>;
+  /** An opaque id of the current describe_ui listing, or null if there is none or it is stale. */
+  refListing(): number | null;
   /** What a ref points at per the latest describeUi (e.g. `Switch "Wi-Fi" at (345,145)`), or null if unknown or stale. */
   describeRef(ref: string): string | null;
   swipe(fromX: number, fromY: number, toX: number, toY: number, duration?: number): Promise<void>;
@@ -82,12 +84,15 @@ export function flattenUi(root: unknown, max = MAX_ELEMENTS): string {
 }
 
 /**
- * The screen's layout: every listed element's type, label and frame, in order, plus the total.
- * Values are left out so a flipped switch is the same screen. Any added element (an alert, a sheet,
- * a banner) or a different app changes it, which comparing one element at its index would miss.
+ * The screen's layout: the foreground app's root node, then every qualifying element's type, label
+ * and frame, in order, plus the total. Values are left out so a flipped switch is the same screen.
+ * Any added element (an alert, a sheet, a banner) or a different app changes it, even an app whose
+ * controls happen to match, which comparing one element at its index would miss.
  */
-function layout({ elements, total }: UiListing): string {
-  return JSON.stringify([total, elements.map((e) => [e.kind, e.text, e.rect.x, e.rect.y, e.rect.width, e.rect.height])]);
+function layout(root: unknown, { elements, total }: UiListing): string {
+  const r = (root ?? {}) as UiNode & { rawIdentifier?: unknown; bundleId?: unknown };
+  const app = [r.type ?? null, r.label ?? null, r.name ?? null, r.rawIdentifier ?? null, r.bundleId ?? null];
+  return JSON.stringify([app, total, elements.map((e) => [e.kind, e.text, e.rect.x, e.rect.y, e.rect.width, e.rect.height])]);
 }
 
 const center = (r: Rect) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
@@ -99,7 +104,9 @@ export class IPhone implements Device {
   private size: { width: number; height: number } | null = null;
   // Bumped before every device action: refs from an older epoch are stale whatever the screen shows now.
   private epoch = 0;
-  private refs: { epoch: number; byRef: Map<string, UiElement>; layout: string } | null = null;
+  private refs: { epoch: number; listing: number; byRef: Map<string, UiElement>; layout: string } | null = null;
+  // Each describe_ui listing gets a new id, so an approval can name the exact listing it saw.
+  private listings = 0;
 
   constructor(wda: WdaClient) {
     this.wda = wda;
@@ -126,11 +133,18 @@ export class IPhone implements Device {
     const source = await this.wda.source("json");
     const ui = uiElements(source, MAX_ELEMENTS);
     // An action that ran while /source was in flight may have changed the screen under this listing.
-    if (epoch === this.epoch) this.refs = { epoch, byRef: new Map(ui.elements.map((e) => [e.ref, e])), layout: layout(uiElements(source, Infinity)) };
+    if (epoch === this.epoch) {
+      this.refs = {
+        epoch,
+        listing: ++this.listings,
+        byRef: new Map(ui.elements.map((e) => [e.ref, e])),
+        layout: layout(source, uiElements(source, Infinity)),
+      };
+    }
     return formatUi(ui);
   }
 
-  async tapRef(ref: string, expect?: string): Promise<void> {
+  async tapRef(ref: string, listing?: number): Promise<void> {
     const cached = this.refs;
     if (!cached) throw new Error("no element refs yet: call describe_ui first, then tap by ref.");
     if (cached.epoch !== this.epoch) throw new Error(`ref ${ref} is stale: an action ran since the last describe_ui. ${REFRESH}`);
@@ -139,10 +153,10 @@ export class IPhone implements Device {
       const listed = cached.byRef.size ? `listed e1..e${cached.byRef.size}` : "listed no elements";
       throw new Error(`unknown ref ${ref}: the last describe_ui ${listed}. ${REFRESH}`);
     }
-    // A describe_ui that ran while approval was pending can rebind the ref to another element.
-    // Tap only what the approver saw.
-    if (expect !== undefined && this.describeRef(ref) !== expect) {
-      throw new Error(`ref ${ref} no longer points at the approved element (${expect}). ${REFRESH}`);
+    // A describe_ui that ran while approval was pending can rebind the ref to another element, even
+    // one that looks identical (a Back button in the same spot). Tap only from the listing approved.
+    if (listing !== undefined && cached.listing !== listing) {
+      throw new Error(`ref ${ref} was re-listed since it was approved; the approved element may be gone. ${REFRESH}`);
     }
     const c = center(target.rect);
     // Fresh, not the cached size: after a rotation the window is landscape and the cache is stale.
@@ -154,7 +168,8 @@ export class IPhone implements Device {
     // The screen can change without our tools (an alert, a notification, a slow transition), so the
     // whole layout must still match what describe_ui saw before tapping there.
     // Every qualifying element, not just the 150 listed, so a change past the cap still counts.
-    const now = layout(uiElements(await this.wda.source("json"), Infinity));
+    const source = await this.wda.source("json");
+    const now = layout(source, uiElements(source, Infinity));
     // Compare with the epoch checked on entry, not one read after the awaits above: an action that
     // ran during either await (a concurrent MCP call) must expire this ref.
     if (this.epoch !== cached.epoch || now !== cached.layout) {
@@ -163,6 +178,11 @@ export class IPhone implements Device {
       throw new Error(`ref ${ref} is stale: the screen changed since the last describe_ui. ${REFRESH}`);
     }
     await this.tap(c.x, c.y);
+  }
+
+  refListing(): number | null {
+    const cached = this.refs;
+    return cached && cached.epoch === this.epoch ? cached.listing : null;
   }
 
   describeRef(ref: string): string | null {

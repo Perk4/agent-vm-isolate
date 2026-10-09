@@ -116,7 +116,12 @@ export type RunResult = { answer: string; steps: Step[]; stopReason: string };
  */
 export function approvalInput(device: Device, name: string, input: Record<string, unknown>): Record<string, unknown> {
   if (name !== "tap" || typeof input.ref !== "string") return input;
-  return { ...input, target: device.describeRef(input.ref) ?? "unknown or stale ref (the tap will be refused)" };
+  // `listing` pins the tap to the describe_ui listing this target came from (see IPhone.tapRef).
+  return {
+    ...input,
+    target: device.describeRef(input.ref) ?? "unknown or stale ref (the tap will be refused)",
+    listing: device.refListing() ?? -1,
+  };
 }
 
 /** Tools that change device state; these go through the approve gate. */
@@ -157,8 +162,8 @@ export async function execute(device: Device, name: string, input: Record<string
       const byRef = input.ref !== undefined;
       const byPoint = input.x !== undefined || input.y !== undefined;
       if (byRef === byPoint) throw new Error("tap takes either ref or x and y: exactly one of the two forms");
-      // `target` is set by approvalInput (never by the model: the schema forbids extra fields).
-      if (byRef) await device.tapRef(s("ref"), typeof input.target === "string" ? input.target : undefined);
+      // `listing` is set by approvalInput (never by the model: the schema forbids extra fields).
+      if (byRef) await device.tapRef(s("ref"), typeof input.listing === "number" ? input.listing : undefined);
       else await device.tap(n("x"), n("y"));
       break;
     }
