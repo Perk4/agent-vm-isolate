@@ -32,8 +32,8 @@ WDA was the better base for a repeatable prototype. The same API works on the Si
 | tool | WDA call |
 |---|---|
 | `screenshot` | `GET /screenshot`, downscaled from 3x pixels to points |
-| `describe_ui` | `GET /session/:id/source?format=json`, flattened to `Button "Save" center=(340,142) size=68x44` |
-| `tap {x,y}` | `POST /session/:id/wda/tap` |
+| `describe_ui` | `GET /session/:id/source?format=json`, flattened to `e3 Button "Save" center=(340,142) size=68x44` |
+| `tap {ref}` or `tap {x,y}` | `POST /session/:id/wda/tap` (a ref is re-checked against `/source` first) |
 | `swipe {from_x,from_y,to_x,to_y}` | `POST /session/:id/wda/dragfromtoforduration` |
 | `type_text {text}` | `POST /session/:id/wda/keys` |
 | `press_button {home\|volumeUp\|volumeDown}` | `POST /wda/homescreen`, `POST /session/:id/wda/pressButton` |
@@ -42,6 +42,8 @@ WDA was the better base for a repeatable prototype. The same API works on the Si
 Every action returns a fresh screenshot, so each turn is one observe → act cycle.
 
 **Coordinates.** WDA taps are in points, but screenshots come back in pixels (3x on most iPhones). The API also downsizes large images. If the model read coordinates off a raw screenshot, its taps would miss. `device.ts` downscales every screenshot to point resolution with a small built-in PNG codec (`png.ts`, using node:zlib). That way screenshot coordinates, `describe_ui` centers and tap coordinates are all the same numbers.
+
+**Element refs.** Each `describe_ui` line starts with a ref (`e1`, `e2`, ...), and `tap {ref}` taps that element's center, so the model doesn't copy numbers by hand. Ref numbers are never reused on a device: each listing continues where the last one stopped (`e1`..`e2`, then `e3`..), so a ref from an older listing, or another HTTP client's, is refused as unknown instead of naming a different element. Refs expire after any action. Before tapping, `IPhone.tapRef` re-reads `/source` and checks that the whole screen layout still matches: every visible node's type, label, identifier, value, enabled state and frame. So an alert or sheet that appeared on top, or a different app, makes every ref stale. A ref whose element sits off-screen is refused, with a hint to swipe it into view. With `--confirm` or an `approve` hook, a tap by ref shows what it resolves to, and is pinned to the exact `describe_ui` listing the approver saw (a later listing refuses it, even if an identical element sits in the same spot), e.g. `{"ref":"e4","target":"Switch \"Wi-Fi\" at (346,146)"}`. A stale or unknown ref returns an error telling the model to call `describe_ui` again; it never taps old coordinates. The `tap` schema keeps `ref`, `x` and `y` optional and `execute` enforces "ref, or x and y", because the Messages API refuses a top-level `oneOf`/`anyOf` in a tool schema.
 
 ## Try it without a phone
 

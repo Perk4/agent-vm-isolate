@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import { ACTIONS, execute, TOOLS, type ToolContent } from "./agent.ts";
+import { ACTIONS, approvalInput, execute, TOOLS, type ToolContent } from "./agent.ts";
 import { IPhone, type Device } from "./device.ts";
 // Circular on purpose: mcp-http.ts uses createPhoneMcpServer only inside functions, so either
 // module can load first. A dynamic import here would deadlock against this file's top-level await.
@@ -66,11 +66,14 @@ export function createPhoneMcpServer(device: Device, opts: PhoneServerOptions = 
     const { name, arguments: args = {} } = req.params;
     if (!names.has(name)) return { isError: true, content: [{ type: "text", text: `unknown or disabled tool: ${name}` }] };
     try {
-      if (ACTIONS.has(name) && opts.approve && !(await opts.approve(name, args))) {
+      // Resolve once: the approver and the tap must see the same target.
+      const shown = approvalInput(device, name, args);
+      if (ACTIONS.has(name) && opts.approve && !(await opts.approve(name, shown))) {
         return { isError: true, content: [{ type: "text", text: "action denied by the operator" }] };
       }
       // Approval stays outside the lock so a pending human prompt doesn't block other clients' reads.
-      return { content: toMcp(await exclusive(device, () => execute(device, name, args))) };
+      // `shown` carries the approved listing id, so the tap runs against what was approved.
+      return { content: toMcp(await exclusive(device, () => execute(device, name, shown))) };
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
     }

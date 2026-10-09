@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import { clearOldToolResults, runAgent, TOOLS, type CreateMessage } from "./agent.ts";
+import { approvalInput, clearOldToolResults, execute, runAgent, TOOLS, type CreateMessage } from "./agent.ts";
 import { flattenUi, IPhone } from "./device.ts";
 import { startMockWda, type MockWda } from "./mock-wda.ts";
 import { decodePng, encodePng, resize } from "./png.ts";
@@ -17,7 +17,7 @@ before(async () => {
 after(() => mock.close());
 
 function reset() {
-  Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [] });
+  Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [], alert: null });
   mock.log.length = 0;
 }
 
@@ -279,4 +279,325 @@ test("WDA errors delivered with HTTP 200 still throw (W3C envelope and legacy st
   } finally {
     srv.close();
   }
+});
+
+test("describe_ui prefixes each element with a ref", async () => {
+  reset();
+  const ui = await new IPhone(new WdaClient(mock.url)).describeUi();
+  assert.match(ui, /^e1 Icon "Settings" center=\(62,112\)/m);
+  assert.match(ui, /^e2 Icon "Notes" center=\(152,112\)/m);
+});
+
+test("agent loop: tap by ref turns Wi-Fi off", async () => {
+  reset();
+  // Home: e1 Settings, e2 Notes. Settings, numbered on: e3 Back, e4 title, e5 Wi-Fi cell, e6 Wi-Fi switch.
+  const model = scripted([
+    [{ name: "describe_ui", input: {} }],
+    [{ name: "tap", input: { ref: "e1" } }],
+    [{ name: "describe_ui", input: {} }],
+    [{ name: "tap", input: { ref: "e6" } }],
+    "Wi-Fi is now off.",
+  ]);
+  const result = await runAgent({ task: "Turn off Wi-Fi", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create });
+  assert.ok(result.steps.every((s) => s.ok), JSON.stringify(result.steps));
+  assert.equal(mock.state.app, "com.apple.Preferences");
+  assert.equal(mock.state.wifi, false);
+});
+
+test("a ref from before launch_app is stale: is_error, and nothing is tapped", async () => {
+  reset();
+  const model = scripted([
+    [{ name: "describe_ui", input: {} }],
+    [{ name: "launch_app", input: { bundle_id: "com.apple.Preferences" } }],
+    [{ name: "tap", input: { ref: "e1" } }],
+    "stopped",
+  ]);
+  const result = await runAgent({ task: "x", device: new IPhone(new WdaClient(mock.url)), createMessage: model.create });
+  const tap = result.steps[2]!;
+  assert.equal(tap.ok, false);
+  assert.match(tap.note, /e1 is stale: an action ran.*describe_ui/);
+  const tr = (model.seen[3]!.messages.at(-1)!.content as Anthropic.Beta.BetaToolResultBlockParam[])[0]!;
+  assert.equal(tr.is_error, true);
+  // e1 is Back on the Settings screen; tapping it would have gone home.
+  assert.equal(mock.state.app, "com.apple.Preferences");
+  assert.ok(!mock.log.includes("POST /wda/tap"));
+});
+
+test("tap by ref re-checks the screen and refuses when it changed out of band", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.describeUi();
+  mock.state.app = "com.apple.Preferences"; // the screen changed without going through our tools
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /e1 is stale: the screen changed.*describe_ui/);
+  assert.ok(!mock.log.includes("POST /wda/tap"));
+  assert.equal(mock.state.app, "com.apple.Preferences");
+});
+
+test("any action expires refs, even one that leaves the screen as it was", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.describeUi();
+  await execute(phone, "press_button", { button: "home" }); // already home: same screen, same elements
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /e1 is stale: an action ran/);
+  assert.equal(mock.state.app, "home");
+  assert.match(await phone.describeUi(), /^e3 Icon "Settings"/m); // same screen, new numbers
+  await execute(phone, "tap", { ref: "e3" });
+  assert.equal(mock.state.app, "com.apple.Preferences");
+});
+
+test("tap input: unknown ref, ref before describe_ui, both forms, and neither form are errors", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /call describe_ui/);
+  await phone.describeUi();
+  await assert.rejects(execute(phone, "tap", { ref: "e99" }), /unknown ref e99.*describe_ui/);
+  await assert.rejects(execute(phone, "tap", { ref: "e1", x: 1, y: 2 }), /either ref or x and y/);
+  await assert.rejects(execute(phone, "tap", {}), /either ref or x and y/);
+  await assert.rejects(execute(phone, "tap", { x: 1 }), /y must be a number/);
+  assert.ok(!mock.log.includes("POST /wda/tap"));
+  assert.equal(mock.state.app, "home");
+});
+
+test("an alert that appears over the screen makes every ref stale; the tap never reaches it", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.launchApp("com.apple.Preferences");
+  await phone.describeUi();
+  mock.state.alert = "Allow Notes to use your location?"; // appears without going through our tools
+  await assert.rejects(execute(phone, "tap", { ref: "e4" }), /e4 is stale: the screen changed/);
+  assert.equal(mock.state.alert, "Allow Notes to use your location?", "the alert was not answered");
+  assert.equal(mock.state.wifi, true);
+  // A retry with another ref still says stale, not "call describe_ui first".
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /e1 is stale/);
+  mock.state.alert = null;
+});
+
+test("a ref whose element is off-screen is refused instead of tapping outside the screen", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.launchApp("com.apple.Preferences");
+  assert.match(await phone.describeUi(), /e5 Cell "Privacy" center=\(195,925\)/);
+  await assert.rejects(execute(phone, "tap", { ref: "e5" }), /e5 is off-screen at \(195,925\): swipe it into view/);
+  assert.ok(!mock.log.some((l) => l === "POST /wda/tap"));
+});
+
+test("the approve gate sees what a ref resolves to, not just its name", async () => {
+  reset();
+  const seen: Record<string, unknown>[] = [];
+  const model = scripted([
+    [{ name: "launch_app", input: { bundle_id: "com.apple.Preferences" } }],
+    [{ name: "describe_ui", input: {} }],
+    [{ name: "tap", input: { ref: "e4" } }],
+    "done",
+  ]);
+  const result = await runAgent({
+    task: "x",
+    device: new IPhone(new WdaClient(mock.url)),
+    createMessage: model.create,
+    approve: (_tool, input) => (seen.push(input), true),
+  });
+  const approved = seen.at(-1)!;
+  assert.equal(approved.target, 'Switch "Wi-Fi" at (346,146)');
+  assert.equal(typeof approved.listing, "number");
+  assert.deepEqual(result.steps.at(-1)!.input, approved);
+  assert.equal(mock.state.wifi, false);
+});
+
+/** A WDA stand-in serving a fixed tree, for screens the mock can't draw. */
+function fakeWda(state: { tree: unknown; size: { width: number; height: number }; bundleId?: string }) {
+  const taps: [number, number][] = [];
+  const wda = {
+    source: async () => state.tree,
+    activeBundleId: async () => state.bundleId ?? "com.example.app",
+    windowSize: async () => state.size,
+    screenshot: async () =>
+      encodePng({ width: state.size.width, height: state.size.height, rgb: Buffer.alloc(state.size.width * state.size.height * 3) }).toString("base64"),
+    tap: async (x: number, y: number) => void taps.push([x, y]),
+  };
+  return { wda: wda as unknown as WdaClient, taps };
+}
+
+const button = (label: string, x: number, y: number) => ({
+  type: "XCUIElementTypeButton", label, rect: { x, y, width: 40, height: 20 }, children: [],
+});
+
+test("ref staleness covers elements past the 150 listed", async () => {
+  const buttons = Array.from({ length: 200 }, (_, i) => button(`b${i}`, 10, 10 + i));
+  const state = { tree: { type: "XCUIElementTypeApplication", children: buttons }, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  assert.match(await phone.describeUi(), /\.\.\. 50 more elements/);
+  // Element 180 is never listed, but an overlay replacing it still changes the screen.
+  state.tree = { ...state.tree, children: buttons.map((b, i) => (i === 180 ? button("Allow", 10, 190) : b)) };
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("after a rotation, a ref on the right of a landscape screen is on-screen", async () => {
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [button("Right", 700, 100)] }, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  await phone.screenshot(); // caches the portrait window size, as a real session would
+  state.size = { width: 844, height: 390 };
+  await phone.describeUi();
+  await phone.tapRef("e1");
+  assert.deepEqual(taps, [[720, 110]]);
+});
+
+test("an action that runs while tapRef awaits the window size expires the ref", async () => {
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [button("OK", 10, 10)] }, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  let release = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const slowWda = Object.assign(Object.create(wda) as WdaClient, {
+    windowSize: async () => {
+      await gate;
+      return state.size;
+    },
+  });
+  const phone = new IPhone(slowWda);
+  await phone.describeUi();
+  const pending = phone.tapRef("e1");
+  await phone.tap(1, 1); // a concurrent action that leaves the layout unchanged
+  release();
+  await assert.rejects(pending, /e1 is stale/);
+  assert.deepEqual(taps, [[1, 1]]);
+});
+
+test("a describe_ui during a pending approval can't redirect the approved tap", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.describeUi(); // home: e1 = the Settings icon
+  const shown = approvalInput(phone, "tap", { ref: "e1" });
+  assert.equal(shown.target, 'Icon "Settings" at (62,112)');
+  // While the human is deciding, the screen changes out of band and another describe_ui lists
+  // Settings, Back button first. The layout check alone would accept this tap.
+  mock.state.app = "com.apple.Preferences";
+  assert.match(await phone.describeUi(), /^e3 Button "Back"/);
+  await assert.rejects(execute(phone, "tap", shown), /unknown ref e1.*never reused/);
+  assert.equal(mock.state.app, "com.apple.Preferences", "Back was not tapped");
+});
+
+test("an identical-looking element in a new listing is not the approved one", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.launchApp("com.apple.Preferences");
+  await phone.describeUi();
+  const shown = approvalInput(phone, "tap", { ref: "e1" });
+  assert.equal(shown.target, 'Button "Back" at (43,72)');
+  // Out of band, Notes comes to the front. Its Back button has the same label and frame, so a
+  // fresh describe_ui gives it the same description. It is still not what was approved.
+  mock.state.app = "com.apple.mobilenotes";
+  assert.match(await phone.describeUi(), /^e6 Button "Back"/);
+  assert.equal(approvalInput(phone, "tap", { ref: "e6" }).target, shown.target);
+  await assert.rejects(execute(phone, "tap", shown), /unknown ref e1.*never reused/);
+  assert.equal(mock.state.app, "com.apple.mobilenotes", "Back was not tapped");
+});
+
+test("a different foreground app with matching controls makes refs stale", async () => {
+  // Same root label and controls; only the foreground bundle id (from /wda/activeAppInfo) differs.
+  const tree = { type: "XCUIElementTypeApplication", label: "Shop", children: [button("OK", 10, 10)] };
+  const state = { tree, size: { width: 390, height: 844 }, bundleId: "com.example.a" };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  await phone.describeUi();
+  state.bundleId = "com.example.b";
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("a control whose state changed out of band makes refs stale", async () => {
+  reset();
+  const phone = new IPhone(new WdaClient(mock.url));
+  await phone.launchApp("com.apple.Preferences");
+  assert.match(await phone.describeUi(), /e4 Switch "Wi-Fi".*value="1"/);
+  mock.state.wifi = false; // flipped elsewhere: tapping e4 now would turn Wi-Fi back on
+  await assert.rejects(execute(phone, "tap", { ref: "e4" }), /e4 is stale: the screen changed/);
+  assert.equal(mock.state.wifi, false);
+});
+
+test("hidden elements get no ref, and an element turning hidden makes refs stale", async () => {
+  const shown = { ...button("Shown", 10, 10) };
+  const hidden = { ...button("Hidden", 10, 40), isVisible: "0" };
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [shown, hidden] } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  const ui = await phone.describeUi();
+  assert.match(ui, /e1 Button "Shown"/);
+  assert.doesNotMatch(ui, /Hidden/);
+  state.tree = { type: "XCUIElementTypeApplication", children: [{ ...shown, isVisible: "0" }, hidden] };
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("a look-alike control with a different identifier makes refs stale", async () => {
+  const ok = (id: string) => ({ ...button("Delete", 10, 10), name: "Delete", rawIdentifier: id });
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [ok("delete-draft-1")] } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  await phone.describeUi();
+  state.tree = { type: "XCUIElementTypeApplication", children: [ok("delete-account")] };
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("an app switch while /source is read gives no refs, and fails a pending tap", async () => {
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [button("OK", 10, 10)] } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  let switching = true;
+  let reads = 0;
+  // While `switching`, the foreground app changes between the bundle reads that bracket /source.
+  const bundle = async () => (switching && reads++ % 2 === 1 ? "com.b" : "com.a");
+  const phone = new IPhone(Object.assign(Object.create(wda) as WdaClient, { activeBundleId: bundle }));
+  assert.match(await phone.describeUi(), /e1 Button "OK"/);
+  await assert.rejects(phone.tapRef("e1"), /no element refs yet/);
+
+  // A consistent listing, then a switch during tapRef's own snapshot: refused.
+  switching = false;
+  assert.match(await phone.describeUi(), /e2 Button "OK"/);
+  switching = true;
+  reads = 0;
+  await assert.rejects(phone.tapRef("e2"), /e2 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("an unlabeled overlay appearing over listed controls makes refs stale", async () => {
+  const app = (...children: unknown[]) => ({ type: "XCUIElementTypeApplication", children });
+  const state = { tree: app(button("OK", 10, 10)) as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  const phone = new IPhone(wda);
+  await phone.describeUi();
+  // No label, name or value, so the listing skips it, but it now covers the OK button.
+  state.tree = app(button("OK", 10, 10), { type: "XCUIElementTypeButton", rect: { x: 0, y: 0, width: 390, height: 844 } });
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale: the screen changed/);
+  assert.deepEqual(taps, []);
+});
+
+test("an inconsistent describe_ui expires the previous listing's refs", async () => {
+  const state = { tree: { type: "XCUIElementTypeApplication", children: [button("OK", 10, 10)] } as unknown, size: { width: 390, height: 844 } };
+  const { wda, taps } = fakeWda(state);
+  let switching = false;
+  let reads = 0;
+  const bundle = async () => (switching && reads++ % 2 === 1 ? "com.b" : "com.a");
+  const phone = new IPhone(Object.assign(Object.create(wda) as WdaClient, { activeBundleId: bundle }));
+  await phone.describeUi();
+  switching = true;
+  assert.match(await phone.describeUi(), /refs unavailable/);
+  // The screen settles back to the first layout; the e1 just shown must still not resolve to the older listing.
+  switching = false;
+  assert.equal(phone.describeRef("e1"), null);
+  await assert.rejects(phone.tapRef("e1"), /e1 is stale/);
+  assert.deepEqual(taps, []);
+});
+
+test("a ref from one client's listing can't tap an element of another client's newer listing", async () => {
+  reset();
+  // Two MCP-over-HTTP clients share one device, so they share its refs.
+  const phone = new IPhone(new WdaClient(mock.url));
+  assert.match(await phone.describeUi(), /^e1 Icon "Settings"/m); // client A
+  await execute(phone, "tap", { x: 62, y: 112 }); // client B opens Settings...
+  assert.match(await phone.describeUi(), /^e3 Button "Back"/m); // ...and lists it
+  // A taps the e1 it was shown. Per-listing numbering would have made that Settings' Back button.
+  await assert.rejects(execute(phone, "tap", { ref: "e1" }), /unknown ref e1: the last describe_ui listed e3\.\.e7/);
+  assert.equal(mock.state.app, "com.apple.Preferences", "Back was not tapped");
 });

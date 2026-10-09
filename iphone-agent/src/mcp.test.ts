@@ -17,7 +17,7 @@ before(async () => {
 after(() => mock.close());
 
 async function connect(opts: PhoneServerOptions = {}) {
-  Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [] });
+  Object.assign(mock.state, { app: "home", wifi: true, draft: "", focused: false, notes: [], alert: null });
   const server = createPhoneMcpServer(new IPhone(new WdaClient(mock.url)), opts);
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
@@ -35,7 +35,10 @@ test("lists all seven tools with read-only annotations", async () => {
   assert.equal(tools.find((t) => t.name === "tap")!.annotations?.readOnlyHint, false);
   assert.equal(tools.find((t) => t.name === "tap")!.annotations?.destructiveHint, true);
   assert.equal(tools.find((t) => t.name === "tap")!.annotations?.openWorldHint, true);
-  assert.deepEqual(tools.find((t) => t.name === "tap")!.inputSchema.required, ["x", "y"]);
+  // tap takes {ref} or {x,y}: all three are advertised, none is required on its own.
+  const tap = tools.find((t) => t.name === "tap")!.inputSchema;
+  assert.deepEqual(Object.keys(tap.properties ?? {}).sort(), ["ref", "x", "y"]);
+  assert.deepEqual(tap.required, []);
   await client.close();
 });
 
@@ -51,6 +54,26 @@ test("an MCP client can drive the phone: open Settings, flip Wi-Fi", async () =>
 
   await client.callTool({ name: "tap", arguments: { x: 345, y: 145 } });
   assert.equal(mock.state.wifi, false);
+  await client.close();
+});
+
+test("an MCP client can flip Wi-Fi by ref, and a ref is stale after launch_app", async () => {
+  const client = await connect();
+  const home = (await client.callTool({ name: "describe_ui", arguments: {} })).content as Block[];
+  assert.match(home[0]!.text!, /^e1 Icon "Settings"/m);
+  await client.callTool({ name: "tap", arguments: { ref: "e1" } });
+  assert.equal(mock.state.app, "com.apple.Preferences");
+  const settings = (await client.callTool({ name: "describe_ui", arguments: {} })).content as Block[];
+  assert.match(settings[0]!.text!, /^e6 Switch "Wi-Fi"/m);
+  const res = await client.callTool({ name: "tap", arguments: { ref: "e6" } });
+  assert.notEqual(res.isError, true);
+  assert.equal(mock.state.wifi, false);
+
+  await client.callTool({ name: "launch_app", arguments: { bundle_id: "com.apple.mobilenotes" } });
+  const stale = await client.callTool({ name: "tap", arguments: { ref: "e6" } });
+  assert.equal(stale.isError, true);
+  assert.match((stale.content as Block[])[0]!.text!, /stale.*describe_ui/);
+  assert.equal(mock.state.app, "com.apple.mobilenotes");
   await client.close();
 });
 

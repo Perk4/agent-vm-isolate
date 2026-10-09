@@ -28,15 +28,25 @@ export const TOOLS: Tool[] = [
   {
     name: "describe_ui",
     description:
-      "List on-screen accessibility elements, one per line: type, label, center=(x,y) in points, size, value. " +
-      "Prefer tapping an element's center over estimating coordinates from the screenshot.",
+      "List on-screen accessibility elements, one per line: ref (e.g. e12), type, label, center=(x,y) in points, size, value. " +
+      "Each listing numbers its refs anew (never reusing a number), so use the refs from the latest listing. " +
+      "Tap an element by its ref rather than estimating coordinates from the screenshot. " +
+      "Refs expire after any action; call describe_ui again before tapping by ref.",
     input_schema: obj({}, []),
     strict: true,
   },
   {
     name: "tap",
-    description: "Tap at (x, y) in points. Returns a fresh screenshot.",
-    input_schema: obj({ x: num("x in points"), y: num("y in points") }, ["x", "y"]),
+    description:
+      "Tap an element by its ref from the latest describe_ui, e.g. {\"ref\": \"e4\"}, or tap at {\"x\", \"y\"} in points. " +
+      "Pass either ref, or both x and y, never both forms. A stale ref returns an error and taps nothing. " +
+      "Returns a fresh screenshot.",
+    // Either/or input, but a root-level oneOf/anyOf is refused by the Messages API (and so by MCP
+    // clients that forward this schema), so all three fields are optional and execute() checks the shape.
+    input_schema: obj(
+      { ref: { type: "string", description: "element ref from describe_ui, e.g. e4" }, x: num("x in points"), y: num("y in points") },
+      [],
+    ),
     strict: true,
   },
   {
@@ -72,7 +82,7 @@ export const TOOLS: Tool[] = [
 
 export const SYSTEM = `You operate a real iPhone through tools. You cannot see the screen unless you call screenshot or an action returns one.
 
-Work in short observe -> act cycles: look, take one action, check the result. Use describe_ui to get exact element centers; all coordinates are iOS points. To type, tap the text field first, then type_text.
+Work in short observe -> act cycles: look, take one action, check the result. Use describe_ui to list elements, then tap them by ref; refs expire after every action, so call describe_ui again before the next tap by ref. All coordinates are iOS points. To type, tap the text field first, then type_text.
 
 Do not enter passwords, make purchases, send messages, or change security settings unless the task explicitly says to. If something unexpected appears (login wall, permission prompt, payment sheet), stop and report it.
 
@@ -100,6 +110,20 @@ export type RunOptions = {
 };
 
 export type RunResult = { answer: string; steps: Step[]; stopReason: string };
+
+/**
+ * The input an approver sees. A tap by ref gets a `target` naming the element it resolves to,
+ * because `{"ref":"e7"}` alone doesn't tell a human whether e7 is "Cancel" or "Buy".
+ */
+export function approvalInput(device: Device, name: string, input: Record<string, unknown>): Record<string, unknown> {
+  if (name !== "tap" || typeof input.ref !== "string") return input;
+  // `listing` pins the tap to the describe_ui listing this target came from (see IPhone.tapRef).
+  return {
+    ...input,
+    target: device.describeRef(input.ref) ?? "unknown or stale ref (the tap will be refused)",
+    listing: device.refListing() ?? -1,
+  };
+}
 
 /** Tools that change device state; these go through the approve gate. */
 export const ACTIONS = new Set(["tap", "swipe", "type_text", "press_button", "launch_app"]);
@@ -135,9 +159,15 @@ export async function execute(device: Device, name: string, input: Record<string
       return await shot(device);
     case "describe_ui":
       return await device.describeUi();
-    case "tap":
-      await device.tap(n("x"), n("y"));
+    case "tap": {
+      const byRef = input.ref !== undefined;
+      const byPoint = input.x !== undefined || input.y !== undefined;
+      if (byRef === byPoint) throw new Error("tap takes either ref or x and y: exactly one of the two forms");
+      // `listing` is set by approvalInput (never by the model: the schema forbids extra fields).
+      if (byRef) await device.tapRef(s("ref"), typeof input.listing === "number" ? input.listing : undefined);
+      else await device.tap(n("x"), n("y"));
       break;
+    }
     case "swipe":
       await device.swipe(n("from_x"), n("from_y"), n("to_x"), n("to_y"));
       break;
@@ -220,20 +250,22 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     const results: ToolResult[] = [];
     for (const use of uses) {
       const input = (use.input ?? {}) as Record<string, unknown>;
+      // Resolve a tap's ref before acting: once the tap runs, the ref is stale.
+      const shown = approvalInput(device, use.name, input);
       let content: ToolContent;
       let ok = true;
       let note = "ok";
       try {
-        if (ACTIONS.has(use.name) && opts.approve && !(await opts.approve(use.name, input))) {
+        if (ACTIONS.has(use.name) && opts.approve && !(await opts.approve(use.name, shown))) {
           throw new Error("action denied by the operator");
         }
-        content = await execute(device, use.name, input);
+        content = await execute(device, use.name, shown);
       } catch (err) {
         ok = false;
         note = err instanceof Error ? err.message : String(err);
         content = note;
       }
-      const step = { tool: use.name, input, ok, note };
+      const step = { tool: use.name, input: shown, ok, note };
       steps.push(step);
       opts.onStep?.(step);
       // All results go back in one user message so parallel calls keep working.

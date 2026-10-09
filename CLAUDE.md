@@ -66,6 +66,7 @@ Add entries when something bites you. Keep each to one or two lines.
 - After a device action succeeds, never report the step as failed because the follow-up screenshot failed. The model will repeat the action (double taps, duplicate text).
 - Every loop exit path, `pause_turn` included, must count against `maxSteps`.
 - WDA can report an error with HTTP 200, as a `{ value: { error } }` body or a legacy non-zero `status`. Check the body, not just `res.ok`.
+- A tool `input_schema` can't put `oneOf`/`anyOf`/`allOf` at the root (the Messages API refuses it, and MCP clients forward `inputSchema` there), and strict mode has no `oneOf` at all. For either/or input, make the fields optional and check the shape in `execute()` (see `tap`).
 - Under `set -o pipefail`, `printf "$big" | grep -q x` can fail even when it matches: `grep -q` exits early and `printf` dies of SIGPIPE. Use `grep -q x <<<"$big"` (bit `scripts/stop-check.sh`).
 - To shrink old screenshots/tool results, use server-side context editing (`context_management`, beta `context-management-2025-06-27`), never a client-side prune: edited history invalidates preserved thinking on `claude-opus-5-5`. Tests assert requests stay append-only.
 - A module with top-level `await` must not dynamically `import()` a module that imports it back: the cycle deadlocks silently. Use a static import.
