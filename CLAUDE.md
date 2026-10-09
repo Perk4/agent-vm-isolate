@@ -64,3 +64,4 @@ Add entries when something bites you. Keep each to one or two lines.
 - After a device action succeeds, never report the step as failed because the follow-up screenshot failed. The model will repeat the action (double taps, duplicate text).
 - Every loop exit path, `pause_turn` included, must count against `maxSteps`.
 - WDA can report an error with HTTP 200, as a `{ value: { error } }` body or a legacy non-zero `status`. Check the body, not just `res.ok`.
+- To shrink old screenshots/tool results, use server-side context editing (`context_management`, beta `context-management-2025-06-27`), never a client-side prune: edited history invalidates preserved thinking on `claude-opus-5-5`. Tests assert requests stay append-only.
