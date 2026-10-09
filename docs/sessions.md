@@ -4,6 +4,8 @@ Each Claude Code cloud session (claude.ai/code) is a fresh container with a fres
 
 The commands live in `.claude/commands/`: `/start_ticket`, `/plan_next`, `/handoff`, plus `/create_plan`, `/validate_plan`, `/show_me`. They only exist once PR #2 is merged into `main`. Until then, start each prompt with "Start from branch `claude/iphone-agent-harness`."
 
+A project Stop hook (`scripts/stop-check.sh`) runs root tests + typecheck, anti-slop and iphone-agent typecheck + tests (auto `npm ci` if needed) in the session's repo or worktree when check inputs changed. It is silent when green and blocks the stop with only the failures, at most 3 times per session. After merges, run `/learn` to mine review threads into rules (it searches from the last `Mined through` time in `thoughts/learnings-log.md` and skips PRs already mined).
+
 ## Kickoff prompts (copy-paste)
 
 **(a) Start a ticket**
